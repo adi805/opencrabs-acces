@@ -313,6 +313,22 @@ impl OnboardingWizard {
     /// In quick_jump mode, only writes settings relevant to the current step to avoid
     /// overwriting unrelated channel/provider settings loaded with defaults.
     pub fn apply_config(&self) -> Result<(), String> {
+        self.apply_config_inner(true)
+    }
+
+    /// The same save with the provider sweep OFF.
+    ///
+    /// `apply_config` disables every `[providers.*]` section before enabling the
+    /// wizard's pick. That is the user's own choice when they actually made one,
+    /// and a wipe when they did not: the saves that run on the way OUT of the
+    /// wizard (quit, cancel, back navigation, the pre-generation save) carried
+    /// whatever the wizard happened to be showing, so a provider that was
+    /// already enabled and in use went dark because someone pressed Esc.
+    pub fn apply_config_preserving_providers(&self) -> Result<(), String> {
+        self.apply_config_inner(false)
+    }
+
+    fn apply_config_inner(&self, sweep_providers: bool) -> Result<(), String> {
         // Determine which sections to write based on quick_jump + current step
         let write_provider = !self.quick_jump
             || matches!(
@@ -348,6 +364,7 @@ impl OnboardingWizard {
             write_voice,
             write_image,
             true,
+            sweep_providers,
         )
     }
 
@@ -382,6 +399,9 @@ impl OnboardingWizard {
             write_voice,
             write_image,
             false,
+            // A completed step is a choice the user made on that page, so it
+            // sweeps like a full save does.
+            true,
         )
         .map_err(|e| format!("{} step: {}", section, e))
     }
@@ -390,6 +410,8 @@ impl OnboardingWizard {
     /// `finalize` also runs the completion-only tasks (template seeding,
     /// daemon install) in their original position; step-scoped saves pass
     /// false so a mid-wizard save never seeds templates or installs services.
+    /// `sweep_providers` decides whether this save turns the other
+    /// `[providers.*]` sections off — see `apply_config_preserving_providers`.
     fn write_scoped_config(
         &self,
         write_provider: bool,
@@ -397,6 +419,7 @@ impl OnboardingWizard {
         write_voice: bool,
         write_image: bool,
         finalize: bool,
+        sweep_providers: bool,
     ) -> Result<(), String> {
         // Empty-custom_name guard: a custom provider with no name typed yet
         // would format the section as `providers.custom.` (empty subkey) and
@@ -445,8 +468,10 @@ impl OnboardingWizard {
         };
 
         if write_provider {
-            // Disable all providers first, then enable selected one
-            {
+            // Disable all providers first, then enable selected one. Skipped for
+            // a save the user never asked for: it would switch off providers
+            // that were on before the wizard opened.
+            if sweep_providers {
                 let all_sections = if let Ok(cfg) = Config::load() {
                     crate::utils::providers::all_config_sections(&cfg.providers)
                 } else {
@@ -461,6 +486,7 @@ impl OnboardingWizard {
                         write_errors.push(format!("{}.enabled", s));
                     }
                 }
+            }
             }
 
             // Enable + configure the selected provider
