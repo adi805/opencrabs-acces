@@ -60,6 +60,23 @@ fn splits_cleanly(prefix: &str) -> bool {
     depth == 0
 }
 
+/// Discord allows 5 action rows of 5 buttons, so 25 entries is a hard platform
+/// ceiling, not a choice (#2190).
+pub(crate) const MENU_BUTTON_CAP: usize = 25;
+
+/// Body for a menu message, with an explicit notice when the list was cut.
+///
+/// The defect was truncating silently: a user with 30 providers saw 25 and no
+/// hint that five were unreachable from the menu. Returns the body unchanged
+/// when everything fits.
+pub(crate) fn menu_body(text: &str, total: usize) -> String {
+    if total <= MENU_BUTTON_CAP {
+        return text.to_string();
+    }
+    let shown = total.min(MENU_BUTTON_CAP);
+    format!("{text}\n\nShowing 1-{shown} of {total}. The rest are reachable from the TUI.")
+}
+
 pub fn split_message(text: &str, max_len: usize) -> Vec<String> {
     if text.len() <= max_len {
         return vec![text.to_string()];
@@ -1002,7 +1019,9 @@ pub(crate) async fn handle_message(
                         )
                     })
                     .collect();
-                let builder = CreateMessage::new().content(&resp.text).components(rows);
+                let builder = CreateMessage::new()
+                    .content(menu_body(&resp.text, resp.providers.len()))
+                    .components(rows);
                 // Never silent (#1019): this IS the reply. A swallowed failure
                 // here is indistinguishable from the agent choosing not to
                 // answer, and the user has no way to tell or report it.
@@ -1131,7 +1150,9 @@ pub(crate) async fn handle_message(
                         )
                     })
                     .collect();
-                let builder = CreateMessage::new().content(&resp.text).components(rows);
+                let builder = CreateMessage::new()
+                    .content(menu_body(&resp.text, resp.sessions.len()))
+                    .components(rows);
                 // Never silent (#1019): this IS the reply. A swallowed failure
                 // here is indistinguishable from the agent choosing not to
                 // answer, and the user has no way to tell or report it.

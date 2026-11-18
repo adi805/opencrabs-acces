@@ -585,6 +585,12 @@ impl AgentService {
             user_message,
         );
 
+        // A new user turn is a new intent (#2211). A command the user now asks
+        // for explicitly must run even if an earlier turn saw it fail: the
+        // retry guard exists to stop back-to-back retries inside one turn, not
+        // to refuse a fresh request from the person at the keyboard.
+        crate::brain::tools::bash::note_environment_changed(session_id);
+
         // Track this request for restart recovery. Resume turns pass
         // `track_origin == None`: a resume is a one-shot best-effort recovery,
         // so it must NOT re-insert its own pending row. Otherwise an interrupted
@@ -862,6 +868,27 @@ impl AgentService {
             evidence.push('\n');
         }
         evidence
+    }
+
+    /// Every tool input this session has recorded so far (#2122).
+    ///
+    /// Read from the persisted assistant rows rather than `tool_executions`,
+    /// which carries no input column. The tail is enough: a denial is about
+    /// this session's recent work, and the whole history of a long session is
+    /// not worth loading to answer it. A failed read yields nothing, because a
+    /// missing read must not become a false fabrication accusation.
+    async fn session_recorded_tool_inputs(session_id: Uuid) -> Vec<String> {
+        /// Rows of history a denial is checked against.
+        const HISTORY_ROWS: usize = 400;
+        let Some(pool) = crate::db::global_pool() else {
+            return Vec::new();
+        };
+        let repo = crate::db::repository::MessageRepository::new(pool.clone());
+        let Ok(messages) = repo.find_recent_by_session(session_id, HISTORY_ROWS).await else {
+            return Vec::new();
+        };
+        let contents: Vec<String> = messages.into_iter().map(|m| m.content).collect();
+        super::phantom::ledger_tool_inputs(&contents)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1561,6 +1588,13 @@ impl AgentService {
         // #129 belt-and-braces: interactive-only tools check this flag and
         // hard-error instead of parking a verdict nobody sees.
         tool_context.headless = self.headless;
+        tool_context.plan_gate_exempt = self.plan_gate_exempt;
+        // #2134: a turn serving a stranger carries that fact on the context, so
+        // the registry can refuse tools outside the guest allowlist and
+        // `read_file` can stay inside the working directory. Stamped here, at
+        // the single context-construction site, so sequential, parallel and
+        // sub-agent dispatch all inherit it.
+        tool_context.guest_scope = self.is_guest_session(session_id);
 
         // Tool execution loop
         let mut iteration = 0;
@@ -1584,6 +1618,12 @@ impl AgentService {
         // checked against what actually ran rather than inferred from its
         // wording (#789).
         let mut turn_tool_input: Vec<String> = Vec::new();
+        // Every tool input this SESSION had recorded before this turn (#2122).
+        // A denial like "no `sleep` command was ever in my tool calls" can be
+        // about an earlier turn, which turn scope cannot see. Filled lazily and
+        // only when the iteration text actually denies something, so an
+        // ordinary turn pays no database read at all.
+        let mut session_tool_input: Option<Vec<String>> = None;
         // Raw search-tool outputs this turn, harvested into the delivered
         // answer's Sources footer at settle (#1883). Kept separate from
         // `turn_tool_output` so non-search tool text never leaks links.
@@ -1623,6 +1663,8 @@ impl AgentService {
         let mut total_output_tokens = 0u32;
         let mut total_cache_creation = 0u32;
         let mut total_cache_read = 0u32;
+        // Whether any iteration's provider reported a cache-read field (#2139).
+        let mut cache_read_reported = false;
         // Sum of per-iteration active-streaming time, used as the tok/s
         // denominator. Replaces the previous `turn_start.elapsed()`
         // wall-clock which silently halved the displayed rate on every
@@ -4079,6 +4121,9 @@ impl AgentService {
             } else {
                 response.usage.cache_creation_tokens
             };
+            if !response.usage.cache_read_unreported {
+                cache_read_reported = true;
+            }
             total_cache_read += if response.usage.billing_cache_read > 0 {
                 response.usage.billing_cache_read
             } else {
@@ -6388,12 +6433,29 @@ impl AgentService {
                     // cannot vouch for a past-tense claim.
                     let mut executed = turn_tool_input.clone();
                     executed.extend(tool_uses.iter().map(|(_, _, input)| input.to_string()));
+                    // #2122: a denial may be about an earlier turn, so the
+                    // session's recorded calls are read separately. That read is
+                    // gated on the text denying something, happens once per
+                    // turn, and only ever feeds the denial check: a call from an
+                    // hour ago must not clear "you claimed this ran and it did
+                    // not", which is a claim about this turn.
+                    let mut history = Vec::new();
+                    if !super::phantom::asserted_history_denials(&iteration_text).is_empty() {
+                        if session_tool_input.is_none() {
+                            session_tool_input =
+                                Some(Self::session_recorded_tool_inputs(session_id).await);
+                        }
+                        if let Some(ref recorded) = session_tool_input {
+                            history.extend(recorded.iter().cloned());
+                        }
+                    }
                     let evidence = Self::conversation_evidence(&context, &turn_tool_output);
-                    super::phantom::mixed_iteration_facts(
+                    super::phantom::mixed_iteration_facts_with_history(
                         &iteration_text,
                         &executed,
                         &turn_tool_output,
                         &evidence,
+                        &history,
                     )
                 };
 
@@ -6861,6 +6923,10 @@ impl AgentService {
                 // Save tool input for progress reporting (before it's moved to execute)
                 let tool_input_for_progress = tool_input.clone();
                 turn_tool_input.push(tool_input.to_string());
+                // Stamp the running turn count for the mechanical plan
+                // requirement: it is counted per turn, not per iteration, so a
+                // turn cannot dodge it by spreading calls over iterations.
+                tool_context.turn_tool_calls = turn_tool_input.len();
 
                 // Build short description for DB persistence
                 tool_descriptions.push(Self::format_tool_summary(&tool_name, &tool_input));
@@ -6872,6 +6938,7 @@ impl AgentService {
                         ProgressEvent::ToolStarted {
                             tool_name: tool_name.clone(),
                             tool_input: tool_input_for_progress.clone(),
+                            tool_call_id: tool_id.clone(),
                         },
                     );
                 }
@@ -7179,6 +7246,7 @@ impl AgentService {
                                                     tool_input: tool_input_for_progress.clone(),
                                                     success,
                                                     summary: output_summary,
+                                                    tool_call_id: tool_id.clone(),
                                                 },
                                             );
                                         }
@@ -7290,6 +7358,7 @@ impl AgentService {
                                                     tool_input: tool_input_for_progress.clone(),
                                                     success: false,
                                                     summary: output_summary,
+                                                    tool_call_id: tool_id.clone(),
                                                 },
                                             );
                                         }
@@ -7537,6 +7606,7 @@ impl AgentService {
                                     tool_input: tool_input_for_progress.clone(),
                                     success,
                                     summary: output_summary,
+                                    tool_call_id: tool_id.clone(),
                                 },
                             );
                         }
@@ -7636,6 +7706,7 @@ impl AgentService {
                                     tool_input: tool_input_for_progress.clone(),
                                     success: false,
                                     summary: output_summary,
+                                    tool_call_id: tool_id.clone(),
                                 },
                             );
                         }
@@ -7881,6 +7952,7 @@ impl AgentService {
                         branches = ?violation.branches,
                         commands = ?violation.uncalled_commands,
                         facts = ?violation.unbacked_facts,
+                        actions = ?violation.unbacked_actions,
                         "Fabricated claim rode a real tool call — correcting in-turn (#1693)",
                     );
                     let prov = self.provider_name_for_session(session_id);
@@ -7897,6 +7969,8 @@ impl AgentService {
                         super::nudge::uncalled_commands_nudge(&violation.uncalled_commands)
                     } else if !violation.unbacked_facts.is_empty() {
                         super::nudge::unbacked_facts_nudge(&violation.unbacked_facts)
+                    } else if !violation.unbacked_actions.is_empty() {
+                        super::nudge::unbacked_actions_nudge(&violation.unbacked_actions)
                     } else {
                         super::nudge::no_tool_calls_nudge(is_local_provider)
                     };
@@ -8207,6 +8281,14 @@ impl AgentService {
                 }
                 Some(super::announcement_loop::TextLoopAction::Continue) | None => {}
             }
+        }
+        // Close the turn for the guard (#2129): a turn that never tripped
+        // forgets its nudges, so an occasional repeat in an otherwise clean
+        // session does not accumulate toward the abort, while consecutive
+        // tripping turns still do.
+        {
+            let mut rings = self.session_outgoing_text_ring.write().unwrap();
+            rings.entry(session_id).or_default().end_turn();
         }
 
         // Turn-end phantom verdict (#752): a turn that ran ZERO tools and ends

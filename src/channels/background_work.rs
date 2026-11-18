@@ -9,7 +9,7 @@
 
 use uuid::Uuid;
 
-use crate::brain::agent::AgentService;
+use crate::brain::agent::{AgentError, AgentService};
 
 /// Alive sub-agent counts captured at settle (#1183): `working` counts
 /// children mid-round (`Running`), `awaiting` counts children parked at a
@@ -77,6 +77,30 @@ pub(crate) fn waiting_verb(bg_count: Option<usize>, agents: SubagentCounts) -> O
     Some(format!("Waiting for {}", parts.join(" + ")))
 }
 
+/// How a row in a turn's tool block names a detached task (#2145, #2147,
+/// #2148, #2149, #2150). A background task outlives the turn that started
+/// it, so its row is the only place its liveness is visible; a plain tool
+/// row keeps its tool name untouched.
+///
+/// One implementation for every surface. Telegram's flow rows, Discord's
+/// card rows, Slack and WhatsApp all render through this, so the wording
+/// cannot drift channel by channel.
+pub(crate) fn detached_row_label(
+    name: &str,
+    task_id: Option<&str>,
+    completed: Option<bool>,
+) -> String {
+    if task_id.is_none() {
+        return name.to_string();
+    }
+    let state = match completed {
+        None => "running",
+        Some(true) => "finished",
+        Some(false) => "failed",
+    };
+    format!("detached task {state}: {name}")
+}
+
 /// Background-task indicator for the settled flow footer (#1054): the first
 /// task's label when exactly one is running, a count when several, `None`
 /// when nothing is detached or no manager is wired (#722). A settled turn
@@ -115,6 +139,48 @@ pub(crate) fn subagent_counts_for(agent: &AgentService, session_id: Uuid) -> Sub
     };
     let (working, awaiting) = mgr.alive_counts_for(session_id);
     SubagentCounts { working, awaiting }
+}
+
+/// Terminal state of a turn, shown by the settled chrome on the surfaces that
+/// stamp one (#480 on Telegram, #1911 on Discord). One vocabulary so a lane
+/// cannot invent its own word for a timeout and have it read as a crash.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum FlowOutcome {
+    Finished,
+    Failed,
+    TimedOut,
+    /// The user stopped the turn (#1987). Telegram never reaches this state
+    /// through the enum: its cancel arm deletes the bubble instead of
+    /// settling it, so only the lanes that stamp a word onto a live bubble
+    /// carry a cancelled turn.
+    Cancelled,
+}
+
+impl FlowOutcome {
+    /// Icon and verb for the settled header, e.g. `("⏱", "Timed out")`.
+    pub(crate) fn icon_verb(self) -> (&'static str, &'static str) {
+        match self {
+            FlowOutcome::Finished => ("✅", "Finished"),
+            FlowOutcome::Failed => ("❌", "Failed"),
+            FlowOutcome::TimedOut => ("⏱", "Timed out"),
+            FlowOutcome::Cancelled => ("❌", "Cancelled"),
+        }
+    }
+}
+
+/// Classify a failed turn (#1911). A timeout reaches the channel as a
+/// provider error whose text carries the deadline wording, so this is a
+/// string match rather than a typed variant. Kept in one place because
+/// Telegram read the same three substrings inline in two files and Discord
+/// read none: every failed turn there settled to one blunt word, so a 500
+/// and a 10-minute stall looked identical on the bubble.
+pub(crate) fn outcome_for_error(err: &AgentError) -> FlowOutcome {
+    let text = err.to_string().to_lowercase();
+    if text.contains("timed out") || text.contains("timeout") || text.contains("deadline") {
+        FlowOutcome::TimedOut
+    } else {
+        FlowOutcome::Failed
+    }
 }
 
 #[cfg(test)]

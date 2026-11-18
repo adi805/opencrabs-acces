@@ -13,6 +13,7 @@
 //! Both return the same thing: a transcript string.
 
 use anyhow::{Context, Result};
+use base64::Engine as _;
 use reqwest::Client;
 use serde::Deserialize;
 
@@ -76,6 +77,75 @@ pub async fn transcribe_audio(
     );
 
     Ok(result.text)
+}
+
+/// True when `base_url` serves transcription on the chat route instead of
+/// `/v1/audio/transcriptions`.
+///
+/// The built-in inference endpoint answers no audio route at all: it takes the
+/// audio as an `input_audio` part on `v1/chat/completions` and returns the
+/// transcript in the assistant message. Every other [OI]-compatible endpoint
+/// keeps the multipart transcription request it has always used.
+///
+/// Pure on purpose, so the routing decision is testable without a network
+/// call. The host check is shared with the install client, so a custom
+/// provider section that copied the install token reaches the same endpoint
+/// under a different name and still gets the chat wire.
+pub fn serves_audio_on_chat_route(base_url: &str) -> bool {
+    crate::brain::provider::opencrabs_install::is_opencrabs_endpoint(Some(base_url))
+}
+
+/// Transcribe audio by sending it as an `input_audio` part on the chat route.
+///
+/// Used for endpoints where [`serves_audio_on_chat_route`] is true. `content`
+/// carries the answer whenever there is one; `reasoning_content` is the model's
+/// thinking trace and only repeats the answer when `content` is empty, so it is
+/// read second and never first.
+pub async fn transcribe_audio_chat(
+    audio_bytes: Vec<u8>,
+    api_key: &str,
+    model: &str,
+    base_url: &str,
+) -> Result<String> {
+    let chat_url = build_endpoint_url(base_url, "v1/chat/completions")?;
+    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&audio_bytes);
+
+    let format = sniff_audio_format(&audio_bytes);
+    let body = chat_audio_body(model, &audio_b64, format);
+
+    let response = Client::new()
+        .post(&chat_url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .json(&body)
+        .send()
+        .await
+        .context("Failed to send audio to the chat transcription route")?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        anyhow::bail!("STT chat-route error ({}): {}", status, error_text);
+    }
+
+    let payload: serde_json::Value = response
+        .json()
+        .await
+        .context("Failed to parse chat transcription response")?;
+
+    let text = chat_audio_transcript(&payload).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Chat transcription returned no text: content and reasoning_content were both empty"
+        )
+    })?;
+
+    tracing::info!(
+        "STT chat route: transcribed {} chars (model={}, url={})",
+        text.len(),
+        model,
+        chat_url,
+    );
+
+    Ok(text.to_string())
 }
 
 #[derive(Deserialize)]
@@ -161,50 +231,16 @@ pub fn chat_audio_body(model: &str, audio_b64: &str, format: &str) -> serde_json
 }
 
 /// The transcript out of a chat-completions response.
+///
+/// `content` carries the answer whenever there is one. `reasoning_content` is
+/// the thinking trace and only repeats the answer when `content` is empty, so
+/// it is read second and never first.
 pub fn chat_audio_transcript(body: &serde_json::Value) -> Option<String> {
-    let content = &body["choices"].as_array()?.first()?["message"]["content"];
-    let text = content.as_str()?.trim();
-    (!text.is_empty()).then_some(text.to_string())
-}
-
-/// Transcribe through the chat route: base64 the audio, post it as an
-/// `input_audio` part, read the reply text.
-pub async fn transcribe_audio_chat(
-    audio_bytes: Vec<u8>,
-    api_key: &str,
-    model: &str,
-    base_url: &str,
-) -> Result<String> {
-    use base64::Engine as _;
-
-    let url = build_endpoint_url(base_url, "v1/chat/completions")?;
-    let format = sniff_audio_format(&audio_bytes);
-    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&audio_bytes);
-    let body = chat_audio_body(model, &audio_b64, format);
-
-    let response = Client::new()
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .json(&body)
-        .send()
-        .await
-        .context("Failed to send audio to the chat transcription route")?;
-
-    let status = response.status();
-    let text = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        anyhow::bail!("STT error ({}): {}", status, text);
-    }
-    let parsed: serde_json::Value =
-        serde_json::from_str(&text).context("Failed to parse chat transcription response")?;
-    let transcript = chat_audio_transcript(&parsed)
-        .ok_or_else(|| anyhow::anyhow!("Chat transcription reply carried no text: {text}"))?;
-
-    tracing::info!(
-        "Chat-route STT: transcribed {} chars (model={}, url={})",
-        transcript.len(),
-        model,
-        url,
-    );
-    Ok(transcript)
+    let message = &body["choices"].as_array()?.first()?["message"];
+    ["content", "reasoning_content"]
+        .iter()
+        .filter_map(|field| message.get(*field).and_then(|value| value.as_str()))
+        .map(str::trim)
+        .find(|text| !text.is_empty())
+        .map(str::to_string)
 }

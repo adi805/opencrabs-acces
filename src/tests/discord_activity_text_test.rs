@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 fn tool(name: &str, context: &str, status: Option<bool>) -> GroupEntry {
     GroupEntry {
+        call_id: String::new(),
+        task_id: None,
         name: name.to_string(),
         context: context.to_string(),
         status,

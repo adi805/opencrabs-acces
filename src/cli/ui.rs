@@ -238,7 +238,13 @@ pub(crate) async fn spawn_cron_scheduler_for_profile(profile_name: String) {
             // Each profile has its own config.toml, so it needs its own
             // migration pass — `load()` no longer does this implicitly (#912).
             crate::config::Config::migrate_config_files();
-            let config = crate::config::Config::load()?;
+            let mut config = crate::config::Config::load()?;
+            // #2151: an adopted profile never opened the TUI either, so its
+            // cron jobs hit the same empty-token wall as `run` did. Provision
+            // inside this profile's home scope. The global config mirror is
+            // deliberately left alone: it belongs to the active profile.
+            crate::brain::provider::opencrabs_acquire::provision_builtin_provider(&mut config)
+                .await;
             let db = Database::connect(&config.database.path).await?;
             db.run_migrations().await?;
             let service_context = ServiceContext::new(db.pool().clone());
@@ -263,9 +269,11 @@ pub(crate) async fn spawn_cron_scheduler_for_profile(profile_name: String) {
                 shared_session.clone(),
                 config_rx,
             ));
-            // #129: this factory builds agents ONLY for cron execution —
-            // headless backstop flag on every agent it creates.
-            factory.set_headless(true);
+            // #129 + #2161: this factory builds agents ONLY for cron
+            // execution. Headless backstop AND plan-gate exemption on every
+            // agent it creates, through one helper so the two flags cannot
+            // drift apart again.
+            crate::channels::configure_cron_factory(&factory);
             // Wire the tool registry into the daemon's factory — WITHOUT this the
             // cron agents got an empty registry and every job ran toolless
             // ("Tool not found: bash"). The interactive path sets this via
@@ -815,6 +823,7 @@ async fn cmd_chat_inner(
                 ProgressEvent::ToolStarted {
                     tool_name,
                     tool_input,
+                    ..
                 } => progress_sender.send(TuiEvent::ToolCallStarted {
                     session_id,
                     tool_name,
@@ -825,12 +834,36 @@ async fn cmd_chat_inner(
                     tool_input,
                     success,
                     summary,
+                    ..
                 } => progress_sender.send(TuiEvent::ToolCallCompleted {
                     session_id,
                     tool_name,
                     tool_input,
                     success,
                     summary,
+                }),
+                // #2145: the core now emits these while the turn is live, so
+                // the TUI can draw a detached task as ONE row in the block
+                // that holds the `bash` call that detached it, then update
+                // that row when the finish arrives (#2146).
+                ProgressEvent::DetachedTaskStarted { task_id, label } => {
+                    progress_sender.send(TuiEvent::DetachedTaskStarted {
+                        session_id,
+                        task_id,
+                        label,
+                    })
+                }
+                ProgressEvent::DetachedTaskFinished {
+                    task_id,
+                    label,
+                    success,
+                    elapsed_secs,
+                } => progress_sender.send(TuiEvent::DetachedTaskFinished {
+                    session_id,
+                    task_id,
+                    label,
+                    success,
+                    elapsed_secs,
                 }),
                 ProgressEvent::IntermediateText { text, reasoning } => {
                     progress_sender.send(TuiEvent::IntermediateText {
@@ -1190,9 +1223,10 @@ async fn cmd_chat_inner(
                 tokio::time::timeout(std::time::Duration::from_secs(120), response_rx.recv())
                     .await
                     .map_err(|_| {
-                        crate::brain::agent::AgentError::Internal(
-                            "Sudo password request timed out (120s)".to_string(),
-                        )
+                        crate::brain::agent::AgentError::Internal(format!(
+                            "Sudo password request timed out (120s). {}",
+                            crate::brain::tools::bash::sudo_access_hint_cached()
+                        ))
                     })?
                     .ok_or_else(|| {
                         crate::brain::agent::AgentError::Internal(
@@ -1691,6 +1725,92 @@ async fn cmd_chat_inner(
                                             session_id,
                                             e
                                         );
+                                        boot_report::record_failed();
+                                    }
+                                }
+                            });
+                            continue;
+                        }
+                        // Discord (#1990): boot recovery rides the tracked
+                        // runner, not the blind `resume_delivery_task`: the
+                        // revived turn gets the visible tool-group shell, the
+                        // live clock, progress events and the session slot,
+                        // so a message sent meanwhile queues as a follow-up
+                        // instead of forking a concurrent loop. Sessions a
+                        // live agent already owns stay on the catch-all path
+                        // (#110's revive semantics).
+                        #[cfg(feature = "discord")]
+                        if channel == "discord"
+                            && let Some(ref cid) = channel_chat_id
+                            && let Ok(discord_ch) = cid.parse::<u64>()
+                            && crate::brain::agent::service::work_status::WorkStatus::find_agent_by_session(
+                                &session_id.to_string(),
+                            )
+                            .is_none()
+                        {
+                            let dstate = discord_state.clone();
+                            let agent = agent.clone();
+                            let ev_tx = ev_tx.clone();
+                            tokio::spawn(async move {
+                                let _presence = crate::cli::resume_delivery::ResumePresence::start(
+                                    &ev_tx,
+                                    session_id,
+                                    "discord",
+                                );
+                                let Some(http) = crate::channels::transport_ready::await_transport(
+                                    "discord",
+                                    session_id,
+                                    || dstate.http(),
+                                )
+                                .await
+                                else {
+                                    tracing::warn!(
+                                        "Discord startup resume: no http within the ready bound, session {session_id} left failed (#1990)"
+                                    );
+                                    boot_report::record_failed();
+                                    return;
+                                };
+                                // The canonical replay prompt plus the promise
+                                // this path now keeps (#1990): a mid-turn
+                                // arrival holds, it does not interrupt.
+                                let prompt = "[System: A restart just occurred while you were \
+                                        processing a request. Read the conversation context and continue \
+                                        where you left off naturally. Do not mention the restart or \
+                                        any interruption - just pick up seamlessly. If a new message \
+                                        arrives while this recovered work continues, it is held for \
+                                        you and reaches you as a follow-up when your turn ends.]"
+                                        .to_string();
+                                match crate::channels::discord::tracked_turn::run_tracked_resume_turn(
+                                    http,
+                                    serenity::model::id::ChannelId::new(discord_ch),
+                                    session_id,
+                                    dstate.clone(),
+                                    agent,
+                                    crate::channels::discord::tracked_turn::ResumeDispatch::Recovery {
+                                        prompt: prompt.clone(),
+                                    },
+                                )
+                                .await
+                                {
+                                    crate::channels::discord::tracked_turn::ResumeTurnOutcome::Delivered => {
+                                        boot_report::record_delivered();
+                                    }
+                                    crate::channels::discord::tracked_turn::ResumeTurnOutcome::Queued => {
+                                        // A turn claimed the slot first (a
+                                        // message arrived before this resume
+                                        // finished wiring): the replay joins
+                                        // its queue, parked in the ledger,
+                                        // never forked.
+                                        tracing::info!(
+                                            "Discord startup resume: session {session_id} already mid-turn, replay held as a follow-up (#1990)"
+                                        );
+                                        dstate.enqueue_followup(
+                                            session_id,
+                                            crate::brain::agent::QueuedUserMessage::plain(prompt),
+                                        );
+                                        boot_report::record_parked();
+                                    }
+                                    crate::channels::discord::tracked_turn::ResumeTurnOutcome::Failed => {
                                         boot_report::record_failed();
                                     }
                                 }

@@ -1,7 +1,7 @@
 //! browser_act — Batched browser actions (multi_act) in ONE call.
 //!
 //! Accepts an ordered `actions` array (`click` / `fill` / `press` /
-//! `select` / `wait` / `upload`) and executes it against a STABLE view: every
+//! `select` / `upload` / `wait`) and executes it against a STABLE view: every
 //! selector is resolved up front in a single JS pass BEFORE anything
 //! executes — a stale reference rejects the whole call instead of
 //! half-running a sequence. Execution aborts on first failure and
@@ -41,9 +41,11 @@ pub(crate) enum Act {
         selector: String,
         value: String,
     },
-    /// Attach files to an `<input type="file">` (#2112). Only PATHS cross
-    /// the tool call: the bytes go browser-side through CDP, so a 10 MB
-    /// video costs one string instead of ~3.5M tokens of base64.
+    /// Attach local files to a file input (#2112).
+    ///
+    /// Only the paths cross the tool call; the bytes go straight from disk to
+    /// the browser, so a 10 MB video costs one short string instead of a
+    /// base64 blob in the context window.
     Upload {
         selector: String,
         files: Vec<String>,
@@ -72,9 +74,7 @@ impl Act {
             Act::Fill { selector, .. } => format!("fill {selector}"),
             Act::Press { key } => format!("press {key}"),
             Act::Select { selector, .. } => format!("select {selector}"),
-            Act::Upload { selector, files } => {
-                format!("upload {selector} ({} files)", files.len())
-            }
+            Act::Upload { selector, files } => format!("upload {selector} ({} files)", files.len()),
             Act::Wait { ms } => format!("wait {ms}ms"),
         }
     }
@@ -107,16 +107,16 @@ pub(crate) fn parse_actions(input: &Value) -> std::result::Result<Vec<Act>, Stri
             "press" => Act::Press {
                 key: req_str(a, "key", i, "press")?,
             },
-            "upload" => Act::Upload {
-                selector: req_str(a, "selector", i, "upload")?,
-                files: req_files(a, i)?,
-            },
             "select" => Act::Select {
                 selector: req_str(a, "selector", i, "select")?,
                 value: match a["value"].as_str() {
                     Some(v) => v.to_string(),
                     None => String::new(),
                 },
+            },
+            "upload" => Act::Upload {
+                selector: req_str(a, "selector", i, "upload")?,
+                files: req_upload_paths(a, i)?,
             },
             "wait" => {
                 let ms = a["ms"].as_u64().unwrap_or(0);
@@ -137,8 +137,7 @@ pub(crate) fn parse_actions(input: &Value) -> std::result::Result<Vec<Act>, Stri
             }
             other => {
                 return Err(format!(
-                    "action {}: unknown type '{other}' (expected \
-                     click/fill/press/select/wait/upload)",
+                    "action {}: unknown type '{other}' (expected click/fill/press/select/wait/upload)",
                     i + 1
                 ));
             }
@@ -158,78 +157,63 @@ fn req_str(a: &Value, field: &str, i: usize, kind: &str) -> std::result::Result<
     }
 }
 
-/// `files` for an `upload` action: a non-empty array of absolute paths.
+/// Validate an `upload` action's `files` array (#2112).
 ///
-/// Absolute-only is a security boundary, not a convenience: a relative path
-/// resolves against the BROWSER PROCESS's cwd, so the same action would
-/// attach different files depending on where the browser was launched, and
-/// a page that injected the call could pick the target with a `../` walk.
-fn req_files(a: &Value, i: usize) -> std::result::Result<Vec<String>, String> {
+/// Every path is checked BEFORE any CDP call, so a bad batch has zero side
+/// effects. `DOM.setFileInputFiles` accepts anything the browser process can
+/// read, so a prompt-injected page asking for `~/.ssh/id_rsa` must be refused
+/// here rather than silently attached: the path must be absolute, exist, and
+/// be a regular file.
+fn req_upload_paths(a: &Value, i: usize) -> std::result::Result<Vec<String>, String> {
     let raw = match a["files"].as_array() {
         Some(f) if !f.is_empty() => f,
-        _ => {
+        Some(_) => {
             return Err(format!(
-                "action {}: 'upload' requires a non-empty \"files\" array of absolute paths",
+                "action {}: 'upload' requires a non-empty \"files\" array",
+                i + 1
+            ));
+        }
+        None => {
+            return Err(format!(
+                "action {}: 'upload' requires a \"files\" array of absolute paths",
                 i + 1
             ));
         }
     };
-    let mut out = Vec::with_capacity(raw.len());
-    for f in raw {
-        let path = match f.as_str() {
-            Some(p) if !p.is_empty() => p,
-            _ => {
-                return Err(format!(
-                    "action {}: every \"files\" entry must be a non-empty string",
-                    i + 1
-                ));
-            }
-        };
-        if !std::path::Path::new(path).is_absolute() {
+    let mut paths = Vec::with_capacity(raw.len());
+    for entry in raw {
+        let Some(raw_path) = entry.as_str().filter(|s| !s.trim().is_empty()) else {
             return Err(format!(
-                "action {}: upload path \"{path}\" is relative. Use an absolute path: a \
-                 relative one resolves against the browser process's working directory",
+                "action {}: 'upload' \"files\" entries must be non-empty strings",
+                i + 1
+            ));
+        };
+        let path = std::path::PathBuf::from(raw_path);
+        if !path.is_absolute() {
+            return Err(format!(
+                "action {}: upload path '{raw_path}' is not absolute: the browser \
+                 process cannot resolve a path relative to the agent's working directory",
                 i + 1
             ));
         }
-        out.push(path.to_string());
-    }
-    Ok(out)
-}
-
-/// Resolve every upload path in place, before the first CDP call.
-///
-/// `DOM.setFileInputFiles` will happily attach any path the browser process
-/// can read, including a key file, so the batch is refused up front when a
-/// path is missing or is not a regular file. Canonicalising here also means
-/// the path echoed back in the result (and in the approval preview) is the
-/// one the browser actually used, not a `..`-laden alias of it.
-///
-/// Errors are prefixed like every other parse failure: the operator sees
-/// which action was refused, and `NOTHING executed` stays true because this
-/// runs before frame resolution and pre-flight.
-pub(crate) fn resolve_upload_paths(acts: &mut [Act]) -> std::result::Result<(), String> {
-    for (i, act) in acts.iter_mut().enumerate() {
-        let Act::Upload { files, .. } = act else {
-            continue;
-        };
-        for path in files.iter_mut() {
-            let resolved = std::fs::canonicalize(&*path).map_err(|e| {
-                format!(
-                    "action {}: upload file \"{path}\" is not readable ({e}). NOTHING executed.",
-                    i + 1
-                )
-            })?;
-            if !resolved.is_file() {
+        match std::fs::metadata(&path) {
+            Ok(meta) if meta.is_file() => {}
+            Ok(_) => {
                 return Err(format!(
-                    "action {}: upload path \"{path}\" is not a regular file. NOTHING executed.",
+                    "action {}: upload path '{raw_path}' is not a regular file",
                     i + 1
                 ));
             }
-            *path = resolved.to_string_lossy().into_owned();
+            Err(e) => {
+                return Err(format!(
+                    "action {}: upload path '{raw_path}' does not exist ({e})",
+                    i + 1
+                ));
+            }
         }
+        paths.push(path.to_string_lossy().into_owned());
     }
-    Ok(())
+    Ok(paths)
 }
 
 /// Completed-prefix failure report: "actions 1-2 OK; action 3 failed: …".
@@ -346,8 +330,9 @@ impl Tool for BrowserActTool {
                         {\"type\":\"fill\",\"selector\":\"…\",\"text\":\"…\"} (replaces the value, framework-safe), \
                         {\"type\":\"press\",\"key\":\"Enter\"}, \
                         {\"type\":\"select\",\"selector\":\"…\",\"value\":\"option value\"}, \
-                        {\"type\":\"upload\",\"selector\":\"input[type=file]\",\"files\":[\"/abs/path\"]} \
-                        (absolute paths; the file bytes never enter the tool call; CSS selector only), \
+                        {\"type\":\"upload\",\"selector\":\"input[type=file]\",\"files\":[\"/abs/path/a.mp4\"]} \
+                        (absolute paths to existing regular files; the bytes never enter the \
+                        conversation), \
                         {\"type\":\"wait\",\"ms\":500} (max 10000).",
                 }
             },
@@ -569,22 +554,29 @@ impl BrowserActTool {
             .map(|a| a.label())
             .collect::<Vec<_>>()
             .join(", ");
-        // Echo every resolved absolute path. The label carries the count, and
-        // this line carries the paths themselves: an upload is the one action
-        // that hands the page a file off disk, so the operator has to be able
-        // to read back exactly what was attached (#2112).
-        let mut text = format!(
-            "Executed {} action{} (one call): {summary}",
-            acts.len(),
-            if acts.len() == 1 { "" } else { "s" }
-        );
-        for act in &acts {
-            if let Act::Upload { selector, files } = act {
-                text.push_str(&format!("\nAttached to {selector}: {}", files.join(", ")));
-            }
-        }
+        // #2112: the attached paths are echoed in full. An upload is the one
+        // action whose effect leaves this machine, so the result has to say
+        // exactly which files went out, not just how many.
+        let uploads: Vec<String> = acts
+            .iter()
+            .filter_map(|a| match a {
+                Act::Upload { selector, files } => {
+                    Some(format!("upload {selector}: {}", files.join(", ")))
+                }
+                _ => None,
+            })
+            .collect();
+        let detail = if uploads.is_empty() {
+            String::new()
+        } else {
+            format!("\nAttached files: {}", uploads.join("; "))
+        };
         let mut result = ToolResult::success(super::events::append_line(
-            text,
+            format!(
+                "Executed {} action{} (one call): {summary}{detail}",
+                acts.len(),
+                if acts.len() == 1 { "" } else { "s" }
+            ),
             self.manager.drain_recent_events(),
         ));
         self.manager
@@ -775,42 +767,29 @@ impl BrowserActTool {
         }
     }
 
-    /// Attach files to a file input through CDP (#2112).
+    /// Attach local files to a file input via CDP (#2112).
     ///
-    /// `DOM.setFileInputFiles` takes a node handle, so this path needs a CSS
-    /// selector: `text=` and `xpath=` resolve inside the page as a JS value
-    /// and never produce a node id. Refusing them here is honest, and the
-    /// pre-flight already proved the CSS selector resolves.
-    ///
-    /// Chrome dispatches `input` and `change` itself when the file list is
-    /// set, so no synthetic event is needed. The paths were canonicalised and
-    /// verified as regular files before the batch started.
+    /// `DOM.setFileInputFiles` sets the input's file list as if the user had
+    /// picked them, so the page's own `change` handler fires and every upload
+    /// flow that exists for a human works here too. The paths were validated
+    /// at parse time; the bytes never pass through this process.
     async fn exec_upload(
         &self,
         page: &chromiumoxide::Page,
         selector: &str,
         files: &[String],
     ) -> std::result::Result<(), String> {
-        if selector.starts_with("text=") || selector.starts_with("xpath=") {
-            return Err(format!(
-                "upload needs a CSS selector: '{selector}' resolves inside the page and cannot \
-                 be turned into a node handle"
-            ));
-        }
-        // `f2:` picks the page; it is not part of the CSS.
-        let css = match split_frame_selector(selector) {
-            Some((_, rest)) => rest,
-            None => selector.to_string(),
-        };
-        let element = super::manager::resolve_element(page, &css)
+        let element = super::manager::resolve_element(page, selector)
             .await
             .map_err(|e| format!("file input '{selector}' not found: {e}"))?;
-        let mut params =
-            chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams::new(files.to_vec());
-        params.backend_node_id = Some(element.backend_node_id);
+        let params = chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams::builder()
+            .files(files.to_vec())
+            .backend_node_id(element.backend_node_id)
+            .build()
+            .map_err(|e| format!("cannot build the upload request: {e}"))?;
         page.execute(params)
             .await
-            .map_err(|e| format!("upload to '{selector}' failed: {e}"))?;
+            .map_err(|e| format!("upload failed on '{selector}': {e}"))?;
         Ok(())
     }
 }

@@ -111,23 +111,18 @@ fn gap_labels_have_no_em_dash() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// #2106: the image leg must ask the tool's own resolution, not the raw
-// `[image.generation]` flag. The built-in provider ships that flag off and no
-// key, yet serves image generation through its `generation_model`, so a fresh
-// built-in install was told to switch on a capability it already had.
-// ---------------------------------------------------------------------------
+// ── #2106: the image leg asks the tool's own resolver ────────────────
 
-const BUILTIN_IMAGE_MODEL: &str = "gemini-3.1-flash-image";
-
-fn builtin_provider_config(api_key: Option<&str>) -> Config {
+/// The shape onboarding actually saves for a built-in install: the provider
+/// enabled, the install token stored, the image model pinned.
+fn builtin_install(token: Option<&str>) -> Config {
     Config {
         providers: ProviderConfigs {
             opencrabs: Some(ProviderConfig {
                 enabled: true,
-                api_key: api_key.map(str::to_string),
+                api_key: token.map(str::to_string),
                 default_model: Some("deepseek-v4.1-flash".into()),
-                generation_model: Some(BUILTIN_IMAGE_MODEL.into()),
+                generation_model: Some("gemini-2.5-flash-image".into()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -137,24 +132,43 @@ fn builtin_provider_config(api_key: Option<&str>) -> Config {
 }
 
 #[test]
-fn the_builtin_provider_counts_as_an_image_route() {
+fn a_built_in_install_is_not_told_image_generation_is_missing() {
+    let config = builtin_install(Some("ocp_test_token"));
     assert!(
-        image_generation_ready(&builtin_provider_config(Some("ocp_test_token"))),
-        "the built-in provider serves image generation once its model and token are set"
+        image_generation_ready(&config),
+        "the built-in provider serves image generation on day 0"
+    );
+    let gaps = collect_gaps(FILLED_USER_MD, true, true, image_generation_ready(&config));
+    assert!(
+        !gaps.contains(&SetupGap::ImageGeneration),
+        "a capability the install already has must not be listed as missing: {gaps:?}"
     );
 }
 
 #[test]
-fn a_builtin_section_without_a_token_is_not_a_route() {
-    assert!(!image_generation_ready(&builtin_provider_config(None)));
+fn a_config_with_no_generation_route_still_reports_the_gap() {
+    let config = Config::default();
+    assert!(!image_generation_ready(&config));
+    let gaps = collect_gaps(FILLED_USER_MD, true, true, image_generation_ready(&config));
+    assert!(gaps.contains(&SetupGap::ImageGeneration));
 }
 
 #[test]
-fn no_generation_route_at_all_still_reports_the_gap() {
-    let config = Config::default();
-    assert!(!image_generation_ready(&config));
+fn the_global_gemini_leg_alone_still_counts() {
+    let mut config = Config::default();
+    config.image.generation.enabled = true;
+    config.image.generation.api_key = Some("test-gemini-key".into());
     assert!(
-        collect_gaps(FILLED_USER_MD, true, true, image_generation_ready(&config))
-            .contains(&SetupGap::ImageGeneration)
+        image_generation_ready(&config),
+        "an install configured the old way keeps the same answer"
+    );
+}
+
+#[test]
+fn a_built_in_section_without_a_token_is_not_ready() {
+    let config = builtin_install(None);
+    assert!(
+        !image_generation_ready(&config),
+        "a keyless section is not a route; the gap is honest"
     );
 }

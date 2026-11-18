@@ -11,6 +11,7 @@ pub(crate) mod confidential;
 pub mod epistemic;
 pub mod error;
 pub mod registry;
+pub mod scope;
 pub(crate) mod ssrf;
 pub(crate) mod r#trait;
 
@@ -24,6 +25,7 @@ pub mod fs_util;
 pub mod glob;
 pub mod grep;
 pub mod hashline;
+pub mod line_ops;
 pub mod ls;
 pub mod read;
 pub mod read_state;
@@ -38,9 +40,8 @@ pub mod doc_parser;
 pub mod exa_search;
 pub mod notebook;
 pub mod pdf_to_images;
-pub mod response_bounds;
 pub mod serper_search;
-pub mod sources_footer;
+pub(crate) mod sources_footer;
 pub mod vba_modules;
 pub mod web_scrape;
 pub mod web_search;
@@ -93,10 +94,6 @@ pub mod subagent;
 pub mod dynamic;
 pub mod toml_hot_reload;
 pub mod tool_manage;
-
-// Desktop control: seat-gated and approval-gated. Its effects are Windows-only,
-// but the module compiles on every target so the Linux job can test the gates.
-pub mod windows_desktop;
 
 // Browser automation — headless Chrome via CDP
 #[cfg(feature = "browser")]

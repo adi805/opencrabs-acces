@@ -3581,6 +3581,7 @@ impl OpenAIProvider {
                 output_tokens: response.usage.completion_tokens.unwrap_or(0),
                 cache_creation_tokens: response.usage.cache_creation_input_tokens.unwrap_or(0),
                 cache_read_tokens: response.usage.effective_cache_read(),
+                cache_read_unreported: response.usage.cache_read_absent(),
                 cost_usd: response.usage.cost,
                 ..Default::default()
             },
@@ -3829,7 +3830,9 @@ impl Provider for OpenAIProvider {
                 // is read.
                 let request_id = provider_request_id(response.headers());
 
-                let openai_response: OpenAIResponse = response.json().await?;
+                let body = response.text().await?;
+                log_usage_keys(&body);
+                let openai_response: OpenAIResponse = serde_json::from_str(&body)?;
                 let model_for_response = model.clone();
                 let llm_response = self.from_openai_response(openai_response, &model_for_response);
 
@@ -4594,6 +4597,7 @@ impl Provider for OpenAIProvider {
                                     continue;
                                 }
 
+                                log_usage_keys(json_str);
                                 match serde_json::from_str::<OpenAIStreamChunk>(json_str) {
                                     Ok(chunk) => {
                                         // Emit MessageStart on first chunk with id
@@ -5290,6 +5294,7 @@ impl Provider for OpenAIProvider {
                                                             reasoning_tokens: reasoning,
                                                             cache_creation_tokens: cache_create,
                                                             cache_read_tokens: cache_read,
+                                                            cache_read_unreported: usage.cache_read_absent(),
                                                             cost_usd: usage.cost,
                                                             ..Default::default()
                                                         },
@@ -5706,7 +5711,7 @@ struct OpenAIChoice {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct OpenAIUsage {
+pub(crate) struct OpenAIUsage {
     #[serde(rename = "prompt_tokens")]
     prompt_tokens: Option<u32>,
     #[serde(rename = "completion_tokens")]
@@ -5720,6 +5725,16 @@ struct OpenAIUsage {
     /// `usage.prompt_tokens_details.cached_tokens`.
     #[serde(default)]
     prompt_tokens_details: Option<OpenAIPromptTokensDetails>,
+    /// DeepSeek's own cache reporting: `usage.prompt_cache_hit_tokens`, the prompt
+    /// tokens served from cache (#2136). Read next to the OpenAI field, so a
+    /// DeepSeek call records its hits instead of zero.
+    #[serde(default)]
+    prompt_cache_hit_tokens: Option<u32>,
+    /// Top-level `usage.cached_tokens`, used by some OpenAI-compatible providers
+    /// (Moonshot, per third-party docs; not confirmed against a live response,
+    /// #2140). Read only when no other cache field is present.
+    #[serde(default)]
+    cached_tokens: Option<u32>,
     /// OpenAI/DashScope-style reasoning token reporting:
     /// `usage.completion_tokens_details.reasoning_tokens`.
     #[serde(default)]
@@ -5733,15 +5748,30 @@ struct OpenAIUsage {
 }
 
 impl OpenAIUsage {
+    /// True when the response carried no cache-read field at all (#2139): the
+    /// zero from `effective_cache_read` then means "not reported".
+    pub(crate) fn cache_read_absent(&self) -> bool {
+        self.cache_read_input_tokens.is_none()
+            && self
+                .prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cached_tokens)
+                .is_none()
+            && self.prompt_cache_hit_tokens.is_none()
+            && self.cached_tokens.is_none()
+    }
+
     /// Effective cache-read tokens, merging the Anthropic field and the
     /// OpenAI/DashScope `prompt_tokens_details.cached_tokens` field.
-    fn effective_cache_read(&self) -> u32 {
+    pub(crate) fn effective_cache_read(&self) -> u32 {
         self.cache_read_input_tokens
             .or_else(|| {
                 self.prompt_tokens_details
                     .as_ref()
                     .and_then(|d| d.cached_tokens)
             })
+            .or(self.prompt_cache_hit_tokens)
+            .or(self.cached_tokens)
             .unwrap_or(0)
     }
 
@@ -6031,4 +6061,27 @@ impl Utf8Carry {
         }
         out
     }
+}
+
+/// Debug-log the key names of a response's `usage` object, and of any object
+/// inside it, so the cache-read field a provider actually sends can be read
+/// from normal traffic (#2152). Never logs a value or any prompt content.
+fn log_usage_keys(body: &str) {
+    if !tracing::enabled!(tracing::Level::DEBUG) || !body.contains("\"usage\"") {
+        return;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return;
+    };
+    let Some(usage) = value.get("usage").and_then(|u| u.as_object()) else {
+        return;
+    };
+    let mut keys: Vec<String> = Vec::new();
+    for (key, val) in usage {
+        keys.push(key.clone());
+        if let Some(inner) = val.as_object() {
+            keys.extend(inner.keys().map(|sub| format!("{key}.{sub}")));
+        }
+    }
+    tracing::debug!(usage_keys = ?keys, "provider usage object key names");
 }

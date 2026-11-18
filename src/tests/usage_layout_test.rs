@@ -41,8 +41,8 @@ fn assert_grid_well_formed(layout: &UsageLayout, area: Rect) {
         layout.footer.y >= layout.cards[CARD_COUNT - 1].y + layout.cards[CARD_COUNT - 1].height
     );
 
-    for (i, card) in layout.cards.iter().enumerate() {
-        assert_contained(&format!("card {i}"), *card, area);
+    for i in 0..CARD_COUNT {
+        assert_contained(&format!("card {i}"), layout.cards[i], area);
     }
     for i in 0..CARD_COUNT {
         for j in (i + 1)..CARD_COUNT {
