@@ -112,6 +112,13 @@ public class MainActivity extends Activity {
         // backgrounded. It refuses to serve anything except /status until the
         // user enables the accessibility service.
         AutomationServer.start(this);
+        // Shizuku delivers its binder asynchronously through ShizukuProvider, so
+        // the listener goes in at every activity start and the sticky variant
+        // replays a binder that already arrived. Asking for the permission here
+        // (rather than silently failing on the first command) is what turns a
+        // dead automation surface into one Shizuku dialog the user can accept.
+        ShellBridge.init();
+        ShellBridge.requestPermission();
 
         Retained retained = (Retained) getLastNonConfigurationInstance();
         if (retained != null) {
@@ -122,16 +129,15 @@ public class MainActivity extends Activity {
         }
         pane = new TerminalPane(this);
         client.attachPane(pane);
-        // The title doubles as a size readout: whether the TUI is told 100 columns
-        // or 60 decides if a narrow render is the app's fault or the renderer's,
-        // and this is the only place that number can be seen on a phone.
-        pane.setSizeListener((cols, rows) ->
-            title.setText("OpenCrabs " + cols + "x" + rows));
 
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         immersive = prefs.getBoolean(PREF_IMMERSIVE, false);
         title = new TextView(this);
-        title.setText("OpenCrabs");
+        // The version goes in at creation, not when the grid is reported: every round of
+        // this bug has cost a round trip to work out which build was on the phone, and a
+        // title that only gets its text later cannot answer that if the later path does
+        // not run. The grid numbers replace this string as soon as the first frame paints.
+        title.setText("v" + appVersionName());
         title.setTextColor(0xffe6e6e6);
         title.setTypeface(Typeface.MONOSPACE);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
@@ -139,6 +145,33 @@ public class MainActivity extends Activity {
         // 2dp vertical instead of 4: the title bar is chrome, and every dp it keeps is a
         // dp the terminal does not get.
         title.setPadding(dp(8), dp(2), dp(8), dp(2));
+
+        // The title doubles as a size readout: whether the TUI is told 100 columns or 60
+        // decides if a narrow render is the app's fault or the renderer's, and this is
+        // the only place that number can be seen on a phone. Registered AFTER the field
+        // is assigned (it used to be registered before, so a size change that arrived
+        // early wrote to a null field) and the pane width in px rides along, so one
+        // screenshot answers whether the pane got the whole screen or a padded slice.
+        pane.setSizeListener((cols, rows) -> {
+            // Numbers first, name last. The toolbar gives the title weight=1 next to
+            // three buttons, so a narrow phone can clip this string; when that happens
+            // the name is what should be lost, not the measurement the title exists for.
+            title.setText(cols + "x" + rows + " c" + Math.round(pane.getCellWidth())
+                + " " + pane.getWidth() + " v" + appVersionName());
+            // Report the grid out loud once. "The TUI looks narrow" has three different
+            // causes: a cell width that disagrees with what drawText advances, a pty that
+            // never received the resize, or a pane narrower than the screen. A title bar
+            // readout can be cropped or missed in a screenshot, so the same numbers go
+            // into a toast at the moment the grid is decided: one round trip instead of
+            // three guesses.
+            if (title.getTag() == null) {
+                title.setTag(Boolean.TRUE);
+                Toast.makeText(this, "grid " + cols + "x" + rows
+                    + "  cell " + String.format(java.util.Locale.US, "%.2f", pane.getCellWidth())
+                    + "px  pane " + pane.getWidth() + "px  v" + appVersionName(),
+                    Toast.LENGTH_LONG).show();
+            }
+        });
 
         TextView full = toolButton("FULL");
         full.setOnClickListener(v -> setFullScreen(!immersive));
@@ -243,6 +276,15 @@ public class MainActivity extends Activity {
 
         shell.addView(panel, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    /** Version name from the manifest, so one screenshot identifies the build behind it. */
+    private String appVersionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "?";
+        }
     }
 
     private int dp(int value) {

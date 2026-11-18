@@ -47,8 +47,8 @@ MIN_SDK=26
 # is: as two bare literals they can drift, and a versionCode that does not
 # increase is not a cosmetic bug, it is an APK Android refuses to install over
 # the previous one.
-VERSION_CODE=4
-VERSION_NAME=0.2.2
+VERSION_CODE=10
+VERSION_NAME=0.2.8
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ "$#" -eq 0 ]; then
@@ -236,6 +236,30 @@ for arg in "$@"; do
 done
 
 # --- 2. java -> dex ----------------------------------------------------------
+#
+# android/libs holds the Shizuku client jars (api + aidl + provider) as plain
+# classes.jar extracted from the published AARs, plus a two-class shim for the
+# androidx.annotation.RestrictTo annotation those jars reference but never need
+# at runtime. Vendored rather than resolved because this build has no gradle to
+# run dependency resolution, and the three artifacts change only when the
+# Shizuku protocol does. The AARs carry no resources, so no resource merge is
+# needed either.
+LIBS_DIR="$ROOT/android/libs"
+if [ ! -d "$LIBS_DIR" ]; then
+  echo "android/libs is missing: the Shizuku jars must be vendored there" >&2
+  exit 1
+fi
+find "$LIBS_DIR" -name '*.jar' | sort > "$OUT/jars.txt"
+if [ ! -s "$OUT/jars.txt" ]; then
+  echo "android/libs holds no .jar; the automation backend would not compile" >&2
+  exit 1
+fi
+CLASSPATH="$AJAR"
+while IFS= read -r jar; do
+  CLASSPATH="$CLASSPATH:$jar"
+done < "$OUT/jars.txt"
+echo "java libs   : $(wc -l < "$OUT/jars.txt") jar"
+
 find "$ROOT/android/java" -name '*.java' > "$OUT/sources.txt"
 echo "java sources: $(wc -l < "$OUT/sources.txt")"
 # --release, not -source/-target. Those two set the language level only, so
@@ -248,7 +272,7 @@ echo "java sources: $(wc -l < "$OUT/sources.txt")"
 # The exit status is captured rather than piped away. `javac ... | grep ... ||
 # true` reports grep's status, so a compile error was silently swallowed and
 # the build continued on a partial classes/ directory.
-if ! javac --release 8 -nowarn -classpath "$AJAR" \
+if ! javac --release 8 -nowarn -classpath "$CLASSPATH" \
       -d "$OUT/classes" "@$OUT/sources.txt" > "$OUT/javac.log" 2>&1; then
   grep -v 'bootstrap class path' "$OUT/javac.log" || true
   echo "javac failed; see the errors above" >&2
@@ -257,7 +281,8 @@ fi
 grep -v 'bootstrap class path' "$OUT/javac.log" || true
 
 find "$OUT/classes" -name '*.class' > "$OUT/classes.txt"
-"$BT/d8" --lib "$AJAR" --min-api "$MIN_SDK" --output "$OUT" "@$OUT/classes.txt"
+"$BT/d8" --lib "$AJAR" --min-api "$MIN_SDK" --output "$OUT" \
+  "@$OUT/classes.txt" "@$OUT/jars.txt"
 if [ ! -f "$OUT/classes.dex" ]; then
   echo "d8 produced no classes.dex" >&2
   exit 1
@@ -285,6 +310,22 @@ if [ "${#FLATS[@]}" -eq 0 ]; then
 fi
 echo "resources   : ${#FLATS[@]} flat files"
 
+# android/assets carries the terminal font. Bundling it is the point: the
+# platform face behind Typeface.MONOSPACE differs per ROM, and the TECNO one
+# filled only 56% of each cell, so the same grid read as thin and spread out.
+# -A is the only way aapt2 accepts an assets directory; without it the font is
+# silently absent from the APK and the app falls back to the ROM face again.
+if [ ! -d "$ROOT/android/assets" ]; then
+  echo "android/assets is missing; the terminal font would fall back to the ROM face" >&2
+  exit 1
+fi
+FONT_COUNT=$(find "$ROOT/android/assets/fonts" -type f -name '*.ttf' 2>/dev/null | wc -l)
+if [ "$FONT_COUNT" -eq 0 ]; then
+  echo "android/assets/fonts holds no .ttf; the terminal would render in the ROM face" >&2
+  exit 1
+fi
+echo "assets      : $FONT_COUNT ttf"
+
 "$BT/aapt2" link \
   -o "$OUT/base.apk" \
   --manifest "$ROOT/android/AndroidManifest.xml" \
@@ -293,6 +334,7 @@ echo "resources   : ${#FLATS[@]} flat files"
   --target-sdk-version 35 \
   --version-code "$VERSION_CODE" \
   --version-name "$VERSION_NAME" \
+  -A "$ROOT/android/assets" \
   "${FLATS[@]}"
 
 # --- 4. fold dex + libs into the apk ----------------------------------------
