@@ -195,3 +195,50 @@ fix exists at `9.0.0` but two parents at their latest releases still require
 `cargo audit` fails on any advisory that is not in the ignore list, so a new
 advisory cannot be silenced by accident: it has to be added to the list in a
 reviewable diff. This document is the record for the twelve that are there.
+
+## The 2026-11-18 review (#315)
+
+`cargo audit` went red again on 2026-11-18 with twelve findings against a lock
+that had not moved: four advisories on `calamine 0.36.1` and `pulldown-cmark
+0.13.4`, five on the two remaining `zip` copies, one on `libsqlite3-sys
+0.38.2`, plus the four `unmaintained` / `unsound` warnings that were already
+suppressed.
+
+Two of the four crates were fixed in this pass rather than suppressed:
+
+| Crate | Was | Now | Why it was possible |
+|---|---|---|---|
+| `calamine` | 0.36.1 (zip ^8) | 0.38.0 (zip ^9) | The parent is a direct dependency in `Cargo.toml`; 0.38.0 moved to `zip ^9` and `quick-xml ^0.42`. |
+| `pulldown-cmark` | 0.13.4 | 0.13.6 | Direct dependency; `0.13` already allowed the patched release, the lock was simply stale. |
+| `rust_xlsxwriter` | 0.99 (zip ^8) | 0.102.0 (zip ^9) | Direct dependency, already zip-9 on 0.102. |
+
+The other two cannot move, and the blocking requirement is a lock fact rather
+than a guess:
+
+- `zip 8.6.0` sits behind `docx-rs 0.4.22`, which requires `zip ^8.6.0`.
+  0.4.22 is the latest published release of `docx-rs` (2026-07-21), so there
+  is no version to move to.
+- `zip 1.1.4` sits behind `candle-core 0.8.4`, which requires `zip ^1.1`.
+  `candle-core` cannot be bumped on its own: it arrives through `rwhisper
+  0.4.1`, whose requirement is `candle-core ^0.8.2`, and 0.8.4 is the last
+  release in that line.
+- `libsqlite3-sys 0.38.2` sits behind `rusqlite 0.40.2`. The fix is
+  `libsqlite3-sys >= 0.39.0`, which requires `rusqlite >= 0.41`, which
+  `deadpool-sqlite 0.14.0` excludes by requiring `rusqlite ^0.40.0`.
+  0.14.0 is the latest release of `deadpool-sqlite`.
+
+The zip findings keep the reachability argument recorded above: every one of
+them is about writing entries to disk (`ZipArchive::extract`,
+`ZipStreamReader::extract`, Unix symlink handling during extraction), and no
+crate in this tree calls those APIs. `libsqlite3-sys 2026-0459` is a C-side
+CVE in the bundled SQLite; it is reachable in principle — the database layer
+runs on it — which is why it is listed here as accepted risk rather than as
+"not reachable".
+
+## What would lift each of the 2026-11-18 suppressions
+
+| Trigger | Clears |
+|---|---|
+| `docx-rs` publishes a release requiring `zip ^9` | zip 2026-0429, 2026-0545, 2026-0546, 2026-0547, 2026-0548 on 8.6.0 |
+| `rwhisper` moves to `candle-core >= 0.9`, or `local-stt` is dropped from the default set | the same advisories on 1.1.4 |
+| `deadpool-sqlite` publishes a release requiring `rusqlite ^0.41` | libsqlite3-sys 2026-0459 |
