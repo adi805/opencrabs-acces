@@ -14,12 +14,15 @@ jobs:
           ref: fix/315-audit-deps
       - uses: dtolnay/rust-toolchain@stable
       - name: Regenerate the lock for the bumped direct deps
+        # --precise because the lock carries more than one quick-xml / zip
+        # entry, and a bare -p is ambiguous there. zip and quick-xml are NOT
+        # touched directly: calamine 0.38 and rust_xlsxwriter 0.102 both
+        # accept the zip 9.0.5 already in the lock, and calamine pulls its own
+        # quick-xml 0.42 alongside docx-rs's 0.41.
         run: |
-          cargo update -p calamine
-          cargo update -p rust_xlsxwriter
-          cargo update -p pulldown-cmark
-          cargo update -p quick-xml
-          cargo update -p zip || true
+          cargo update -p calamine --precise 0.38.0
+          cargo update -p rust_xlsxwriter --precise 0.102.0
+          cargo update -p pulldown-cmark --precise 0.13.6
       - name: Show what moved
         run: |
           git diff --stat Cargo.lock || true
