@@ -23,6 +23,55 @@ name: Android binary (artifact)
 
 on:
   workflow_dispatch:
+    inputs:
+      lite:
+        description: "Build the lite variant: no accessibility service, debug signing."
+        required: false
+        type: boolean
+        default: false
+  # Reusable so release-fork.yml can build the APK at the tag being published.
+  # Without this the release workflow has no way to produce an Android asset,
+  # and the only alternative is attaching an APK that some earlier branch run
+  # happened to leave behind, which is an artifact of unknown commit.
+  workflow_call:
+    # release-fork.yml can be dispatched with a `tag` input, and in that case
+    # github.ref is the BRANCH the dispatch ran from, not the tag. A reusable
+    # workflow always checks out the caller's ref, so without this input the
+    # release would publish an APK built from whatever happened to be on that
+    # branch while the Linux archives came from the tag: two different trees
+    # under one version, and both checksums valid. Pass the tag through.
+    inputs:
+      ref:
+        description: "Git ref to build from. Empty means the caller's ref."
+        required: false
+        type: string
+        default: ""
+      # Lite variant: the accessibility service is stripped from the manifest
+      # and the APK is signed with the committed debug key, so it installs
+      # OVER an already installed debug-signed build and carries none of the
+      # declarations Play Protect blocks. Costs the automation bridge.
+      lite:
+        description: "Build the lite variant (no accessibility service, debug signing)."
+        required: false
+        type: boolean
+        default: false
+    # Declared so the caller can pass the signing material by name. The
+    # alternative, `secrets: inherit` in release-fork.yml, hands this workflow
+    # every secret the repo owns and Semgrep rejects it outright as
+    # yaml.github-actions.security.secrets-inherit. required:false keeps the
+    # push and workflow_dispatch triggers working: those are not called by
+    # anyone, so nothing is passed and the env block reads the repo secrets
+    # directly.
+    secrets:
+      ANDROID_KEYSTORE_B64:
+        description: "Base64 encoded PKCS12 release keystore."
+        required: false
+      ANDROID_KEYSTORE_PASS:
+        description: "Password for the release keystore."
+        required: false
+      ANDROID_KEY_ALIAS:
+        description: "Alias of the release key inside the keystore."
+        required: false
   push:
     # main is included so the downloadable artifact tracks the branch that
     # ships. Without it the APK stays whatever the last feat-branch run
@@ -75,6 +124,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Install Rust (pinned by rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
@@ -162,6 +213,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Fetch the core binary built above
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -176,18 +229,257 @@ jobs:
           ndk-version: r27d
           add-to-path: false
 
+      # Toggled before the assemble step, which reads android/AndroidManifest.xml
+      # from the working tree: the edit is in the checkout, disposable by design.
+      - name: Strip the accessibility service for the lite variant
+        if: inputs.lite
+        run: python3 scripts/strip-lite-manifest.py android/AndroidManifest.xml android/AndroidManifest.xml
+
       - name: Assemble the APK
         env:
           # Both names: the runner image preinstalls an NDK and exports
           # ANDROID_NDK_ROOT, while the script reads either.
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          # Release certificate from repo secrets. Without these the script
+          # falls back to the committed debug key, and Play Protect blocks
+          # debug-signed installs on real phones (v0.2.1, 2026-10-24).
+          # A lite build MUST be debug-signed: the phone already runs a
+          # debug-signed install, and Android refuses to replace an app whose
+          # certificate changed (INSTALL_FAILED_UPDATE_INCOMPATIBLE, shown to
+          # the user as "App not installed"). Blanking these three is what
+          # makes assemble-apk.sh fall back to android/debug.keystore.
+          ANDROID_KEYSTORE_B64: ${{ !inputs.lite && secrets.ANDROID_KEYSTORE_B64 || '' }}
+          ANDROID_KEYSTORE_PASS: ${{ !inputs.lite && secrets.ANDROID_KEYSTORE_PASS || '' }}
+          ANDROID_KEY_ALIAS: ${{ !inputs.lite && secrets.ANDROID_KEY_ALIAS || '' }}
         run: bash android/assemble-apk.sh apk-input/opencrabs
+
+      # The APK is now a terminal client, not just a daemon shell: it carries a
+      # third native library (the PTY bridge) and the vendored terminal
+      # emulator's Java classes. assemble-apk.sh asserts the three libs itself,
+      # but a missing Java class cannot fail that script (javac + d8 succeed
+      # either way when a source file is simply absent from the compile list).
+      # That failure mode is silent and lands as NoClassDefFoundError on a
+      # phone, so it is checked here, against the packed artifact.
+      - name: Assert the APK carries the PTY bridge and the terminal emulator
+        shell: bash
+        env:
+          LITE: ${{ inputs.lite }}
+        run: |
+          set -euo pipefail
+          APK=android/out/opencrabs-release.apk
+          if [ ! -f "$APK" ]; then
+            echo "::error::APK not found at $APK (the assemble step did not produce it)"
+            exit 1
+          fi
+          echo "apk: $APK ($(stat -c%s "$APK") bytes)"
+
+          # Native side: the PTY bridge is per-ABI, so assert it for the ABI
+          # this job built rather than for a hardcoded list.
+          #
+          # The listing is captured once and matched with a here-string. Piping
+          # into `grep -q` is not equivalent under `pipefail`: grep exits at the
+          # first match, the producer then dies of SIGPIPE, and the pipeline
+          # reports 141, so a library that IS present reads as missing.
+          LISTING="$(unzip -l "$APK")"
+          printf '%s\n' "$LISTING" | grep -E 'lib/[^/]+/lib.*\.so' || true
+          if ! grep -qF 'lib/arm64-v8a/libopencrabspty.so' <<< "$LISTING"; then
+            echo "::error::libopencrabspty.so is missing from the APK: the PTY JNI would throw UnsatisfiedLinkError on first fork, so the terminal can never spawn"
+            exit 1
+          fi
+          echo "lib/arm64-v8a/libopencrabspty.so: present"
+
+          # Java side: the terminal emulator lives in its own package and is
+          # reached only through TerminalPane, so assert the exact type
+          # descriptors instead of a loose substring that a comment could hit.
+          # dex string data carries the descriptor verbatim, which is why
+          # `strings` on the dex is enough: no dexdump and no extra tooling.
+          DEXDIR="$(mktemp -d)"
+          unzip -o -q "$APK" 'classes*.dex' -d "$DEXDIR"
+          DEXES="$(find "$DEXDIR" -name 'classes*.dex' | sort)"
+          echo "dex files: $(printf '%s ' $DEXES)"
+          STRINGS="$(cat $DEXES | strings)"
+          MISSING=""
+          for type in \
+            Lcom/termux/terminal/TerminalEmulator\; \
+            Lcom/termux/terminal/TerminalSession\; \
+            Lcom/termux/terminal/TerminalBuffer\; \
+            Lio/opencrabs/mobile/TerminalPane\; \
+            Lio/opencrabs/mobile/Pty\;
+          do
+            # Here-string, not a pipe: `grep -q` stops reading at the match, and
+            # under pipefail the resulting SIGPIPE on the producer turns a
+            # present class into a failed check.
+            if grep -qF "$type" <<< "$STRINGS"; then
+              echo "  ok: $type"
+            else
+              echo "  MISSING: $type"
+              MISSING="$MISSING $type"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::the APK is missing terminal classes:$MISSING. The compile list in assemble-apk.sh decides what reaches the dex, so a class that is not listed here is a class that does not ship."
+            exit 1
+          fi
+          echo "terminal emulator and PTY bridge classes: all present"
+
+      - name: Assert the APK carries a launcher icon and the boot receiver
+        shell: bash
+        env:
+          # The manifest assertion below branches on the build mode, so this
+          # step needs the flag too. It used to live only on the preceding
+          # step, which meant LITE always read as unset here and the lite
+          # build was rejected for having exactly the manifest it was asked
+          # to produce (run 40165998395 died there while the APK was correct).
+          LITE: ${{ inputs.lite }}
+        run: |
+          set -euo pipefail
+          APK=android/out/opencrabs-release.apk
+          echo "build mode: LITE=${LITE:-unset}"
+
+          # The icon is a resource, so it is invisible to the dex check above: a
+          # build with an empty android/res and no android:icon attribute installs
+          # fine and silently shows the default Android robot on the launcher.
+          # badging is the assertion that matters, because it reports the icon the
+          # MANIFEST resolved, not merely that a file exists in the zip.
+          AAPT2="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools" -maxdepth 2 -name aapt2 -type f 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$AAPT2" ]; then
+            echo "::error::no aapt2 under the SDK, cannot verify the icon"
+            exit 1
+          fi
+          echo "aapt2: $AAPT2"
+          BADGING="$("$AAPT2" dump badging "$APK" 2>/dev/null || true)"
+          printf '%s\n' "$BADGING" | grep -E '^(package|application):' || true
+
+          if ! grep -qE "^application:.*icon='" <<< "$BADGING"; then
+            echo "::error::the manifest resolved no launcher icon. Check android:icon on <application> and that assemble-apk.sh passes -R android/res to aapt2 link."
+            exit 1
+          fi
+          echo "launcher icon: resolved by the manifest"
+
+          # The round icon is a separate attribute and easy to forget, so assert
+          # it independently rather than assuming it follows the square one.
+          if grep -qE "roundIcon='" <<< "$BADGING"; then
+            echo "round icon: resolved"
+          else
+            echo "::warning::no roundIcon resolved; round-mask launchers will fall back to the square icon"
+          fi
+
+          # BootReceiver only reaches the dex if assemble-apk.sh's source glob
+          # picks it up, and without it the core never returns after a reboot
+          # even though the manifest declares the filter.
+          DEXDIR="$(mktemp -d)"
+          unzip -o -q "$APK" 'classes*.dex' -d "$DEXDIR"
+          STRINGS="$(cat "$DEXDIR"/classes*.dex | strings)"
+          if ! grep -qF 'Lio/opencrabs/mobile/BootReceiver;' <<< "$STRINGS"; then
+            echo "::error::BootReceiver is not in the dex: start-on-boot would be dead code and the core would never return after a reboot."
+            exit 1
+          fi
+          echo "BootReceiver: present in the dex"
+
+          # The automation bridge has two failure modes that both build fine:
+          # the service class missing from the dex (the source glob dropped it),
+          # and the service declared in the manifest without
+          # BIND_ACCESSIBILITY_SERVICE, which would let ANY app on the device
+          # bind it and drive the phone. Both are asserted, because neither
+          # shows up as a build error.
+          for CLS in CrabsAccessibilityService AutomationServer; do
+            if ! grep -qF "Lio/opencrabs/mobile/${CLS};" <<< "$STRINGS"; then
+              echo "::error::${CLS} is not in the dex: the automation bridge would be missing at runtime."
+              exit 1
+            fi
+            echo "${CLS}: present in the dex"
+          done
+
+          MANIFEST_XML="$("$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml 2>/dev/null || true)"
+          if [ -z "$MANIFEST_XML" ]; then
+            # Distinguish "the dump tool failed" from "the service is missing":
+            # an empty dump means the verification itself is broken, and calling
+            # that a manifest problem would send the next reader hunting in the
+            # wrong file.
+            echo "::error::aapt2 could not dump the packaged AndroidManifest.xml, so the service declaration cannot be verified."
+            exit 1
+          fi
+          # The two modes assert OPPOSITE things, so the checks cannot be
+          # shared. Lite mode strips the declaration on purpose: demanding
+          # it here would reject the one build that installs without
+          # touching Play Protect settings, which is the whole point.
+          if [ "${LITE:-false}" = "true" ]; then
+            if grep -qF 'BIND_ACCESSIBILITY_SERVICE' <<< "$MANIFEST_XML"; then
+              echo "::error::this is a lite build but the APK still declares BIND_ACCESSIBILITY_SERVICE, so Play Protect will block the install anyway."
+              exit 1
+            fi
+            if grep -qF 'CrabsAccessibilityService' <<< "$MANIFEST_XML"; then
+              echo "::error::lite build still declares CrabsAccessibilityService, so the strip did not take effect."
+              exit 1
+            fi
+            echo "lite build: accessibility service absent from the manifest, as intended"
+          else
+            if ! grep -qF 'CrabsAccessibilityService' <<< "$MANIFEST_XML"; then
+              echo "::error::CrabsAccessibilityService is not declared in the packaged manifest."
+              exit 1
+            fi
+            if ! grep -qF 'android.permission.BIND_ACCESSIBILITY_SERVICE' <<< "$MANIFEST_XML"; then
+              echo "::error::the accessibility service is declared without BIND_ACCESSIBILITY_SERVICE, so any app could bind it and drive the device."
+              exit 1
+            fi
+            echo "accessibility service: declared with BIND_ACCESSIBILITY_SERVICE"
+          fi
+
+      # The badging and dex checks prove what the APK CONTAINS, not who
+      # signed it. If the secrets ever go missing (rotated token, moved
+      # repo, a future job that forgets `secrets: inherit`), the script
+      # falls back to the debug key WITHOUT failing, and the resulting APK
+      # is the one Play Protect blocks on the phone. Assert the signer here
+      # so that failure lands as a red CI job, not as an unexplainable
+      # install block on a user's device. Guarded on the secret being
+      # present so fork PRs without secret access keep building debug APKs.
+      - name: Assert the APK carries the release certificate
+        if: env.ANDROID_KEYSTORE_B64 != '' && !inputs.lite
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          APK=android/out/opencrabs-release.apk
+          BT="$(find "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/build-tools" -maxdepth 2 -name apksigner -type f 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$BT" ]; then
+            echo "::error::no apksigner under the SDK; cannot verify who signed the APK"
+            exit 1
+          fi
+          CERTS="$("$BT" verify --print-certs "$APK" 2>/dev/null || true)"
+          printf '%s\n' "$CERTS" | grep -E 'certificate DN' || true
+          if grep -qi "Android Debug" <<< "$CERTS"; then
+            echo "::error::the APK is signed with the public Android debug key. ANDROID_KEYSTORE_B64 was empty when the APK was assembled: check the repo secret and the step env."
+            exit 1
+          fi
+          if ! grep -q "CN=OpenCrabs Release" <<< "$CERTS"; then
+            echo "::error::unexpected signer certificate. A signature this check does not recognize must be looked at, not shipped."
+            exit 1
+          fi
+          echo "signer: CN=OpenCrabs Release (private key held in repo secrets)"
+
+      - name: Assert the lite build carries the debug certificate
+        if: inputs.lite
+        run: |
+          set -euo pipefail
+          APK=android/out/opencrabs-release.apk
+          BT="$(find "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/build-tools" -maxdepth 2 -name apksigner -type f 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$BT" ]; then
+            echo "::error::no apksigner under the SDK; cannot verify who signed the APK"
+            exit 1
+          fi
+          CERTS="$("$BT" verify --print-certs "$APK" 2>/dev/null || true)"
+          printf '%s\n' "$CERTS" | grep -E 'certificate DN' || true
+          if ! grep -qi "Android Debug" <<< "$CERTS"; then
+            echo "::error::a lite build must carry the committed debug certificate so it can replace an already installed build. Any other signer fails with INSTALL_FAILED_UPDATE_INCOMPATIBLE."
+            exit 1
+          fi
+          echo "signer: Android Debug (installs over an existing debug-signed install)"
 
       - name: Upload the APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: opencrabs-android-apk
-          path: android/out/opencrabs-debug.apk
+          name: ${{ inputs.lite && 'opencrabs-android-apk-lite' || 'opencrabs-android-apk' }}
+          path: android/out/opencrabs-release.apk
           if-no-files-found: error
           retention-days: 30

@@ -21,6 +21,14 @@ name: Release (fork)
 # aarch64 set-top box, an x86_64 VPS). macOS and Windows legs stay in
 # prerelease.yml for people who build from source; add them here if the fork
 # ever needs to auto-update those platforms.
+#
+# The Android APK rides along since v0.2.0, built by calling android-artifact.yml
+# as a reusable workflow. It has to be built HERE rather than lifted from an
+# earlier branch run: the release asset must correspond to the tagged commit,
+# and a stale APK from some feat branch is an artifact of unknown provenance
+# that still carries a valid checksum. It is also the reason the manifest below
+# globs *.apk and not just *.tar.gz: an asset that ships without a line in
+# SHA256SUMS is published and unchecked, which is worse than absent.
 
 on:
   push:
@@ -133,6 +141,10 @@ jobs:
           done
 
           run_deadline=$((SECONDS + 3600))
+          # Rerun tolerance state. 0 = no attempt observed yet, so the first
+          # failure always opens the window instead of tripping it shut.
+          seen_attempt=0
+          stall_deadline=0
           while :; do
             status=$(printf '%s' "$run" | jq -r '.status')
             conclusion=$(printf '%s' "$run" | jq -r '.conclusion')
@@ -152,8 +164,31 @@ jobs:
                 echo "CI is green on $SHA. Ready to release."
                 exit 0
               fi
-              echo "::error::ci.yml run $id on $SHA concluded '$conclusion'. Refusing to publish a red commit (#2078)."
-              exit 1
+
+              # A red conclusion is not final while auto-rerun is alive.
+              # `Test` is killed by runner preemption (exit 143) often, and
+              # auto-rerun-preempted.yml restarts the SAME run id seconds
+              # later with a higher `run_attempt`. v0.2.2 lost its release
+              # that way: this gate read the failure at 01:36:42.8 and the
+              # rerun landed at 01:36:43.0, 0.2s behind it, so the gate
+              # refuses a commit that is being repaired under it. Refuse
+              # only once the attempt number stops moving instead. (#2078)
+              att=$(gh api "repos/$REPO/actions/runs/$id" -q '.run_attempt' 2>/dev/null || echo "")
+              if [ -z "$att" ] || [ "$att" = "null" ]; then
+                echo "::error::could not read run_attempt for $id, so a real failure cannot be told apart from a rerun."
+                exit 1
+              fi
+
+              if [ "$att" != "$seen_attempt" ]; then
+                echo "run $id attempt $att concluded '$conclusion'; watching 15 minutes for an auto-rerun past it..."
+                seen_attempt="$att"
+                stall_deadline=$((SECONDS + 900))
+              elif [ "$SECONDS" -ge "$stall_deadline" ]; then
+                echo "::error::ci.yml run $id on $SHA stayed '$conclusion' on attempt $att for 15 minutes with no auto-rerun. Refusing to publish a red commit (#2078)."
+                exit 1
+              else
+                echo "still '$conclusion' on attempt $att; auto-rerun window has $((stall_deadline - SECONDS))s left."
+              fi
             fi
 
             if [ "$SECONDS" -ge "$run_deadline" ]; then
@@ -259,9 +294,38 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # Builds the APK at the tag, reusing the shipping workflow rather than
+  # duplicating javac/d8/aapt2 here. Nothing is passed in: the reusable workflow
+  # checks out the caller's ref, so the APK it produces is the tagged tree.
+  android-apk:
+    name: Build Android APK
+    uses: ./.github/workflows/android-artifact.yml
+    # Pass the tag explicitly. A reusable workflow otherwise checks out the
+    # caller's ref, which for a workflow_dispatch is the branch, so a manual
+    # release would ship an APK from that branch under the tag's filename next
+    # to Linux archives built from the tag. Same version, two different trees,
+    # and both checksums would verify.
+    with:
+      ref: ${{ github.event.inputs.tag || github.ref }}
+    # A reusable workflow inherits NO secrets unless the caller passes them,
+    # and the signing script falls back to the committed debug key when
+    # ANDROID_KEYSTORE_B64 is empty: a silent debug-signed release APK is
+    # exactly the artifact Play Protect blocks on the phone with no
+    # install-anyway path. Passed by name, not `inherit`: the callee reads only
+    # these three, and inherit would hand a build step every secret in the repo
+    # (Semgrep rejects it as secrets-inherit).
+    secrets:
+      ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+      ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+    # No continue-on-error here: a reusable workflow call does not accept it
+    # (actionlint rejects it), and a silent Android failure would publish a
+    # release the publish step then refuses to complete. Failing loudly is the
+    # behaviour we want anyway.
+
   publish-release:
     name: Publish release
-    needs: [build-linux]
+    needs: [build-linux, android-apk]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -282,6 +346,15 @@ jobs:
         run: |
           mkdir -p release-assets
           find artifacts -type f -name '*.tar.gz' -exec cp {} release-assets/ \;
+          # The APK arrives as opencrabs-release.apk. Rename it to carry the tag:
+          # a user holding two downloaded files has no other way to tell which
+          # release each came from, and the manifest lines would collide.
+          apk=$(find artifacts -type f -name '*.apk' | head -1)
+          if [ -z "$apk" ]; then
+            echo "::error::no .apk in the downloaded artifacts; the android-apk job did not upload one"
+            exit 1
+          fi
+          cp "$apk" "release-assets/opencrabs-${RELEASE_TAG}-android-arm64.apk"
           cd release-assets
           sha256sum -- * > SHA256SUMS
           ls -la
@@ -318,10 +391,15 @@ jobs:
           tag="${RELEASE_TAG}"
           echo "--- assets on $tag ---"
           gh release view "$tag" --json assets --jq '.assets[].name' | sort
+          # Read the asset list once. `gh ... | grep -qx` would be a pipefail
+          # trap: grep exits at the match, gh gets SIGPIPE, and an asset that is
+          # published reads as missing.
+          PUBLISHED="$(gh release view "$tag" --json assets --jq '.assets[].name')"
           for want in "opencrabs-${tag}-linux-arm64.tar.gz" \
                       "opencrabs-${tag}-linux-amd64.tar.gz" \
+                      "opencrabs-${tag}-android-arm64.apk" \
                       "SHA256SUMS"; do
-            if ! gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx "$want"; then
+            if ! grep -qxF "$want" <<< "$PUBLISHED"; then
               echo "::error::expected asset missing from $tag: $want"
               exit 1
             fi
