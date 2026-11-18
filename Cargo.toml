@@ -199,7 +199,9 @@ pdf-extract = "0.12"
 pdfium-render = { version = "=0.9.1", optional = true }
 zip = "9"
 quick-xml = "0.41"
-calamine = "0.36"
+# 0.38 moved to zip ^9 and quick-xml ^0.42; 0.36 dragged zip 8.6.0 into the
+# graph, which carries five open RUSTSEC advisories (#315).
+calamine = "0.38"
 # Legacy Word 97-2003 (.doc, OLE/CFB) text extraction (#955). Core only:
 # default-features off skips the docx/zip/quick-xml/flate2 path (we parse
 # DOCX ourselves) and the heavy render stack. Net-new deps: cfb, encoding_rs
@@ -218,7 +220,8 @@ url = "2.5.8"
 unicode-normalization = "0.1.25"
 scraper = "0.27.0"
 htmd = "0.5.4"
-rust_xlsxwriter = "0.99"
+# 0.102 moved to zip ^9; 0.99 pinned zip 8.6.0 (#315).
+rust_xlsxwriter = "0.102"
 docx-rs = "0.4.20"
 printpdf = { version = "0.12.7", features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
 rpassword = { version = "7.5.4", optional = true }

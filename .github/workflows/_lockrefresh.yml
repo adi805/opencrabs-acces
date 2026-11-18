@@ -1,0 +1,33 @@
+name: lockrefresh
+on:
+  push:
+    branches: ["fix/315-audit-deps"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/315-audit-deps
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Regenerate the lock for the bumped direct deps
+        run: |
+          cargo update -p calamine
+          cargo update -p rust_xlsxwriter
+          cargo update -p pulldown-cmark
+          cargo update -p quick-xml
+          cargo update -p zip || true
+      - name: Show what moved
+        run: |
+          git diff --stat Cargo.lock || true
+      - name: Push the lock back
+        run: |
+          git config user.name "lockrefresh"
+          git config user.email "lockrefresh@users.noreply.github.com"
+          if git diff --quiet Cargo.lock; then echo "lock already current"; exit 0; fi
+          git add Cargo.lock
+          git commit -m "chore(deps): regenerasi Cargo.lock untuk calamine 0.38 / rust_xlsxwriter 0.102 / pulldown-cmark 0.13.6 (#315)"
+          git push origin HEAD:fix/315-audit-deps
