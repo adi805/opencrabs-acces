@@ -487,7 +487,6 @@ impl OnboardingWizard {
                     }
                 }
             }
-            }
 
             // Enable + configure the selected provider
             let custom_section;
