@@ -31,7 +31,11 @@ impl Store {
             // all store access removes that race. A personal bot's WhatsApp
             // throughput is tiny, so one connection costs nothing.
             .builder(Runtime::Tokio1)
-            .map_err(|e| StoreError::Connection(e.to_string().into()))?
+            // `Config::builder` returns `Result<_, ConfigError>`, and
+            // `ConfigError` is an alias for `Infallible`: no SQLite config can
+            // fail to build, so there is no error to convert. Matching the
+            // empty error type keeps this panic-free without an unreachable arm.
+            .unwrap_or_else(|never| match never {})
             .max_size(1)
             .post_create(Hook::async_fn(|conn, _| {
                 Box::pin(async move {
