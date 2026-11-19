@@ -79,8 +79,31 @@ count_lines() { wc -l < "$log" | tr -d '[:space:]'; }
 # is draining.
 has_result_line() { grep -q -E '\.\.\. (ok|FAILED|ignored)$' "$log" 2>/dev/null; }
 
+# A preempted runner sends SIGTERM. Output now streams live through tee, so
+# the job log already holds the last compile line; this handler only makes
+# sure the command is stopped and tee's tail is flushed before the script
+# dies, instead of leaving a half-written log behind.
+flush_on_signal() {
+  echo "watchdog: SIGTERM/INT received; stopping the command and draining output"
+  kill_tree "${cmd_pid:-}" 2>/dev/null || true
+  wait "${tee_pid:-}" 2>/dev/null || true
+  exit 143
+}
+trap flush_on_signal TERM INT
+
 echo "+ $* (watchdog: stall after ${STALL_SECS}s of result silence)"
-"$@" >"$log" 2>&1 &
+# Stream, don't buffer. The old plain redirect kept every line in "$log" and
+# only printed it at the very end, so a job killed mid-compile (runner
+# preemption sends SIGTERM) produced "exit 143" with zero output and no way
+# to tell a hang from a slow build (runs 44525671967 attempts 1-3). A fifo
+# plus tee streams live AND still fills "$log" for the stall detector, and
+# gives tee a pid we can wait on so the tail is never truncated.
+fifo="$(mktemp -u "${TMPDIR:-/tmp}/stall-watchdog-fifo.XXXXXX")"
+mkfifo "$fifo"
+trap 'rm -f "$log" "$fifo"' EXIT
+tee "$log" < "$fifo" &
+tee_pid=$!
+"$@" > "$fifo" 2>&1 &
 cmd_pid=$!
 
 stalled=0
@@ -118,7 +141,9 @@ if [ "$stalled" -eq 1 ]; then
 fi
 wait "$cmd_pid" 2>/dev/null || rc=$?
 
-cat "$log"
+# tee already streamed every line; closing the fifo lets it finish, and
+# waiting on it guarantees the last lines are not truncated at exit.
+wait "$tee_pid" 2>/dev/null || true
 
 if [ "$stalled" -eq 1 ]; then
   echo "test-stall-watchdog: command $cmd_pid was stalled; killed after dumping stacks (exit 97, #1936)"

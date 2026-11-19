@@ -700,7 +700,14 @@ jobs:
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Save on sync branches too, not just main. A `refs/heads/main`-only
+          # save-if never fires on a PR/sync ref, so every retry of this leg
+          # recompiles cold: three attempts of run 44525671967 spent ~20
+          # minutes each in "Compiling" and were preempted before the suite
+          # ever started (exit 143, zero output). Same reasoning as the build
+          # matrix and the artifact workflows above, which already carry no
+          # save-if restriction for exactly this reason.
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/sync/') }}
 
       - name: Install mold + ALSA dev (Linux)
         # Linux-only toolchain extras; macOS uses the Xcode linker.
