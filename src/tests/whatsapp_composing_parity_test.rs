@@ -63,9 +63,11 @@ fn stop_token_is_born_before_the_task_that_watches_it() {
     // registration. The fork also has a flushed-turn path further down that
     // legitimately starts its OWN turn (and therefore its own token), so a
     // file-wide count would flag that separate turn as a duplicate.
+    let turn = HANDLER
+        .get(..stored)
+        .expect("a `find` index sits on a char boundary");
     assert_eq!(
-        HANDLER[..stored]
-            .matches("let cancel_token = CancellationToken::new();")
+        turn.matches("let cancel_token = CancellationToken::new();")
             .count(),
         1,
         "exactly one token per turn; two would split /stop from the tail"
