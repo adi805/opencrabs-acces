@@ -42,14 +42,6 @@ pub struct WhatsAppState {
     pub(super) pending_followups: Mutex<HashMap<Uuid, Vec<String>>>,
     /// Per-session cancel tokens for aborting in-flight agent tasks via /stop
     pub(super) cancel_tokens: Mutex<HashMap<Uuid, CancellationToken>>,
-    /// Per-session follow-ups queued while the slot is held (#2179).
-    /// Consumed between tool rounds by the queue callback wired in
-    /// manager.rs, and flushed into a fresh turn by whoever held the slot
-    /// last. Distinct from `pending_followups` above, which holds the
-    /// `suggest_options` labels a numeric reply selects.
-    pub(super) turn_queue: std::sync::Mutex<
-        HashMap<Uuid, std::collections::VecDeque<crate::brain::agent::QueuedUserMessage>>,
-    >,
     /// Broadcast channel for QR codes — onboarding subscribes to this.
     pub(super) qr_tx: tokio::sync::broadcast::Sender<String>,
     /// Broadcast channel for connection events — onboarding subscribes to this.
@@ -161,7 +153,6 @@ impl WhatsAppState {
             pending_approvals: Mutex::new(HashMap::new()),
             pending_followups: Mutex::new(HashMap::new()),
             cancel_tokens: Mutex::new(HashMap::new()),
-            turn_queue: std::sync::Mutex::new(HashMap::new()),
             qr_tx,
             connected_tx,
             error_tx,

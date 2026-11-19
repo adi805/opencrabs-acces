@@ -681,7 +681,7 @@ pub(crate) async fn handle_message(
     // Dropping it at ingest is the only place that stops all of that: there is
     // no chat to reply to, so no turn should ever start. Statuses are read-only
     // for a companion device anyway; nothing downstream can act on one.
-    if info.source.chat.is_status_broadcast() {
+    if is_inbound_status(&info.source.chat, info.source.is_from_me) {
         tracing::debug!(
             target: "whatsapp",
             "ignoring status update: status@broadcast is not a chattable conversation"
