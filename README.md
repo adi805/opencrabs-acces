@@ -29,6 +29,8 @@
 
 ⭐ Star us on [GitHub](https://github.com/adi805/opencrabs-windows) if you like what you see!
 
+**Community funded.** No venture capital, no investors, no company behind it. The people who use OpenCrabs pay for the subscriptions, the inference and the credits that keep it running: see [🫶 Sponsors](#-sponsors).
+
 ---
 
 ## Table of Contents
@@ -75,6 +77,7 @@
 - [⚠️ Disclaimers](#-disclaimers)
 - [🤝 Contributing](#-contributing)
 - [📄 License](#-license)
+- [🫶 Sponsors](#-sponsors)
 - [🙏 Acknowledgments](#-acknowledgments)
 - [📞 Support](#-support)
 - [✨ Stay Tuned](#-stay-tuned)
@@ -88,8 +91,8 @@
 The docs and the landing at [opencrabs.com](https://opencrabs.com) are available in six languages: English, Português (PT-PT), Español, Français, Русский and Bahasa Indonesia. Pick one from the language switcher in the menu bar; untranslated paragraphs fall back to English rather than going missing.
 
 ### Getting Started
-- [Installation & Quick Start](src/docs/start/GETTING_STARTED.md)
-- [Onboarding Wizard](src/docs/start/ONBOARDING.md)
+- [Installation & Quick Start](https://docs.opencrabs.com/getting-started/installation.html)
+- [Onboarding Wizard](https://docs.opencrabs.com/getting-started/onboarding.html)
 - [OpenCrabs Overview](src/docs/start/OPENCRABS.md)
 
 ### Reference
@@ -112,6 +115,9 @@ The docs and the landing at [opencrabs.com](https://opencrabs.com) are available
 - [HEARTBEAT.md](src/docs/reference/templates/HEARTBEAT.md) — periodic checklist, read on demand or by a cron job
 
 ### Skills
+
+All of these ship inside the binary, available as `/<name>` in every install, nothing to copy:
+
 - [Security Audit](src/docs/reference/templates/skills/security-audit/SKILL.md)
 - [Cost Estimate](src/docs/reference/templates/skills/cost-estimate/SKILL.md)
 - [Repo Audit](src/docs/reference/templates/skills/repo-audit/SKILL.md)
@@ -119,6 +125,12 @@ The docs and the landing at [opencrabs.com](https://opencrabs.com) are available
 - [Browser CDP](src/docs/reference/templates/skills/browser-cdp/SKILL.md)
 - [A2A Gateway](src/docs/reference/templates/skills/a2a-gateway/SKILL.md)
 - [Dynamic Tools](src/docs/reference/templates/skills/dynamic-tools/SKILL.md)
+
+### Opt-in Skills
+
+Not built in, so they do not reach every user. Copy a folder into `~/.opencrabs/skills/<name>/` and it shows up as `/<name>` for you only:
+
+- [Motion Graphics](src/docs/reference/templates/optional-skills/motion-graphics/SKILL.md): tutorial videos with Remotion (storyboard, drawn UI, voice-over, subtitles). Install with `cp -r src/docs/reference/templates/optional-skills/motion-graphics ~/.opencrabs/skills/motion-graphics`.
 
 ### Cron Templates
 - [Cron Jobs Guide](src/docs/reference/templates/cron/README.md)
@@ -216,7 +228,7 @@ Recall falling is the point: the old rule answered almost everything, which is e
 
 ### Structural code search ([full report](src/eval/results/code-graph-structural-v1.md))
 
-Measured on this repository (1,383 `.rs` files), ground truth locked by grep before any blind search. The symbol graph (`code-graph`, on by default) adds a structural lane beside FTS5+vector:
+Measured on this repository (1,902 `.rs` files), ground truth locked by grep before any blind search. The symbol graph (`code-graph`, on by default) adds a structural lane beside FTS5+vector:
 
 | Query class | Before (FTS5+vector) | After (+ symbol graph) |
 |---|---|---|
@@ -612,7 +624,7 @@ This solves the core UX problem in mention-only groups: previously, tagging the 
 | **Syntax Highlighting** | 100+ languages with line numbers via syntect |
 | **Markdown Rendering** | Rich text formatting with code blocks, headings, lists, and inline styles |
 | **Tool Context Persistence** | Tool call groups saved to DB and reconstructed on session reload — no vanishing tool history |
-| **Expand / Collapse Blocks** | Click a tool-call group or a **Thinking** block, or press `Ctrl+O`, to expand it. Reasoning cycles through three states so a long thought never floods the view: **collapsed → capped** (first ~10 lines + a "… N more (click / ctrl+o for full)" hint) **→ full → collapsed**. Tool-call groups toggle expand/collapse. A plain **click** toggles the block under the cursor; a **click-and-drag** selects text to copy (even over a collapsible block) instead of expanding it |
+| **Expand / Collapse Blocks** | Click a tool-call group or a **Thinking** block, or press `Ctrl+O`, to expand it. Reasoning cycles through three states so a long thought never floods the view: **collapsed → capped** (first ~10 lines + a "… N more (click / ctrl+o for full)" hint) **→ full → collapsed**. Tool-call groups toggle expand/collapse (on Discord, the card pages through its rows; see *Discord tool card*). A plain **click** toggles the block under the cursor; a **click-and-drag** selects text to copy (even over a collapsible block) instead of expanding it |
 | **Multi-line Input** | Alt+Enter / Shift+Enter for newlines; Enter to send |
 | **Abort Processing** | Escape×2 within 3 seconds to cancel any in-progress request |
 | **Clipboard Image Paste** | Copy an image from a browser, screenshot tool, or any app and paste it directly into the input. Raw image bytes are read from the OS clipboard (macOS: osascript, Linux: wl-paste/xclip), written to a temp file, and attached through the existing image pipeline. No need to save to disk first. `Ctrl+V` in the chat input reads the clipboard directly and works in every terminal, including a screenshot copied to the clipboard (image data, no text). `Cmd+V` works where the terminal pastes or passes the key through; iTerm2 and Terminal.app swallow `Cmd+V` for an image-only clipboard, so use `Ctrl+V` there. While the chat input is focused on macOS, an unpasted screenshot in the clipboard also shows a vanishing `Image in clipboard - Ctrl+V to paste` hint inside the input area, like the other notices, until you paste or the clipboard changes |
@@ -1362,8 +1374,9 @@ OpenCrabs ships its own provider, so a new install can chat without creating an 
 **What you get on a fresh install**
 - **Chat model:** `deepseek-v4.1-flash`, 200k context window. The window is fixed at 200k on this provider: the endpoint is free and serves one model, so `context_window` is not honoured here.
 - **Vision:** `vision_model` is set to the same model, so attached images work on day 0.
-- **Image generation:** on by default for fresh installs through `gemini-3.1-flash-image`, which is image-only and never offered as a chat model. Existing installs set `generation_model` on `[providers.opencrabs]` to get it (see [Image Generation & Vision](#-image-generation--vision)).
-- **Voice (STT + TTS):** on by default for fresh installs through `qwen3.8-omni-flash`, which serves both `/v1/audio/transcriptions` and `/v1/audio/speech`. Voice notes transcribe and replies speak on day 0. Existing installs set `stt_model` and `tts_model` on `[providers.opencrabs]` to get it (see [Core Features](#-core-features)).
+- **Image generation:** on by default for fresh installs through `gemini-2.5-flash-image`, which is image-only and never offered as a chat model. Existing installs set `generation_model` on `[providers.opencrabs]` to get it (see [Image Generation & Vision](#-image-generation--vision)).
+- **Voice (in):** transcription works on day 0. The built-in provider answers no `/v1/audio/*` route, so the shipped config sets `stt_model = "qwen3.8-omni-flash"` and the audio is sent as an `input_audio` part on `/v1/chat/completions` alongside the transcription instruction. An engine you configure yourself (Groq, an [OI]-compatible endpoint, Voicebox, local whisper.cpp) stays available, and the active provider's route is the primary one.
+- **Voice (out):** speech is not served by this provider yet. It answers no `/v1/audio/speech` route, so the shipped config leaves `tts_model` unset there. A spoken reply still works through [OI] TTS, Voicebox, or local Piper once one is configured; with none set the reply arrives as text, and a `tts_model` set here would outrank your chosen engine and pay a failed round trip first (see [Core Features](#-core-features)).
 
 **How the key works.** On first use, the install asks `inference.opencrabs.com` for its own token once and saves it in `keys.toml` under `[providers.opencrabs]`. The binary holds no shared upstream key, and the server keeps only a hash of each token. If `keys.toml` is lost, the install requests a new token automatically.
 
@@ -1380,7 +1393,11 @@ default_model = "deepseek-v4.1-flash"
 models = ["deepseek-v4.1-flash"]
 # context_window is not honoured here: the built-in endpoint is free and fixed
 # at 200k, so any value set in this section is ignored.
-vision_model = "deepseek-v4.1-flash"
+vision_model = "deepseek-v4.1-flash"       # vision on day 0, same endpoint
+generation_model = "gemini-2.5-flash-image"  # image generation on day 0
+stt_model = "qwen3.8-omni-flash"             # transcription on day 0, sent as input_audio on the chat route
+# tts_model is left unset: this endpoint answers no /v1/audio/speech route, so a
+# speech model here would outrank your working engine and pay a failed round trip.
 ```
 
 ### Google Gemini
@@ -1844,11 +1861,20 @@ Voice follows the same shape. Set `stt_model` and/or `tts_model` on a provider a
 
 ```toml
 [providers.opencrabs]
-stt_model = "qwen3.8-omni-flash"  # /v1/audio/transcriptions
-tts_model = "qwen3.8-omni-flash"  # /v1/audio/speech
+# Transcription works on day 0. A voice note goes out as an audio-carrying chat
+# request, which is the shape the built-in endpoint serves.
+stt_model = "qwen3.8-omni-flash"
+# Speech is not served by the built-in endpoint, so a tts_model here is ignored
+# rather than paying a failed round trip. A spoken reply still works through the
+# built-in local voice, a [providers.tts.*] block, or Voicebox.
+# tts_model = "qwen3.8-omni-flash"
+
+# On any other provider that exposes the [OI] audio routes:
+# stt_model = "whisper-large-v3-turbo"  # /v1/audio/transcriptions
+# tts_model = "gpt-4o-mini-tts"         # /v1/audio/speech
 ```
 
-Works with any [OI]-compatible provider that exposes those two routes, not only the built-in one. The active provider's route is the primary one; `[providers.stt].fallback_chain` / `[providers.tts].fallback_chain` still apply behind it, and the standalone `[providers.stt.openai_compatible]` / `[providers.tts.openai_compatible]` blocks keep working unchanged. A remote endpoint with no stored key is not a candidate — the same gate `vision_model` uses.
+Works with any [OI]-compatible provider that exposes those two routes, not only the built-in one. The wire follows the endpoint: the built-in endpoint takes the audio as an `input_audio` part on `/v1/chat/completions` and answers no `/v1/audio/transcriptions` route at all, while every other provider keeps the multipart request it has always used. The active provider's route is the primary one; `[providers.stt].fallback_chain` / `[providers.tts].fallback_chain` still apply behind it, and the standalone `[providers.stt.openai_compatible]` / `[providers.tts.openai_compatible]` blocks keep working unchanged. A remote endpoint with no stored key is not a candidate — the same gate `vision_model` uses.
 
 ---
 
@@ -2066,23 +2092,49 @@ OpenCrabs supports multi-agent structured debate via the **Bee Colony** protocol
 
 ## 🚀 Quick Start
 
+### Option 0: One-line installer (easiest, and what an agent should use)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/opencrabs/opencrabs/main/src/scripts/install.sh | bash
+```
+
+It picks the right archive for your OS and architecture, verifies the download against the release's `SHA256SUMS` before unpacking, installs the CLI plus `rtk`, and sets up poppler so scanned PDFs can be read. On macOS it handles both archive layouts: releases that ship `OpenCrabs.app` land the bundle in `~/Applications` with the CLI linked onto your PATH, and older ones install the bare binary. If the install directory is not already on your PATH, it adds it to your shell startup file once, and it verifies that `opencrabs` resolves before it reports success.
+
+It is safe to run with nobody watching, which is the point for scripted and agent-driven installs: with no terminal it never prompts for a password, and if the target directory needs root without passwordless sudo it fails immediately and names the fix instead of hanging forever. Run by hand at a terminal it asks for sudo once, like any installer.
+
+| Flag | What it does |
+|---|---|
+| `--dir <path>` | Install the CLI somewhere else, for example `--dir "$HOME/.local/bin"` |
+| `--version <tag>` | Pin a release instead of taking the latest |
+| `--dry-run` | Resolve and print the plan, install nothing |
+| `--no-deps` | Leave the system package manager alone (skips poppler) |
+| `--no-path` | Install without touching your shell startup file, for example when you manage PATH yourself |
+
+```bash
+# Inspect first, then install without touching system packages
+curl -fsSL https://raw.githubusercontent.com/opencrabs/opencrabs/main/src/scripts/install.sh \
+  | bash -s -- --dry-run --no-deps
+```
+
 ### Option 1: Download Binary (just run it)
 
 Grab a pre-built binary from [GitHub Releases](https://github.com/adi805/opencrabs-windows/releases) — available for Linux (amd64/arm64), macOS (amd64/arm64), and Windows.
 
 ```bash
 # macOS (Apple Silicon) — downloads latest, installs to /usr/local/bin
-curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs rtk && sudo mkdir -p /usr/local/bin && sudo mv opencrabs rtk /usr/local/bin/ && command -v opencrabs
 
 # macOS (Intel)
-curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs rtk && sudo mkdir -p /usr/local/bin && sudo mv opencrabs rtk /usr/local/bin/ && command -v opencrabs
 
 # Linux (x86_64)
-curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs rtk && sudo mkdir -p /usr/local/bin && sudo mv opencrabs rtk /usr/local/bin/ && command -v opencrabs
 
 # Linux (ARM64)
-curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs rtk && sudo mkdir -p /usr/local/bin && sudo mv opencrabs rtk /usr/local/bin/ && command -v opencrabs
 ```
+
+The macOS archive ships `OpenCrabs.app`, not a loose binary: macOS reads an app icon only from a bundle, so a bare Mach-O always shows the generic exec glyph. Copying the bundle to `/Applications` gives you the Dock icon and a Launchpad entry, and the symlink keeps `opencrabs` on your PATH. The Linux archive carries `opencrabs.desktop` and `opencrabs.png` for the same reason, so your application menu has an entry with the real icon instead of a nameless terminal.
 
 Then just type `opencrabs` to start. The onboarding wizard handles everything on first run.
 
@@ -2099,13 +2151,13 @@ Then just type `opencrabs` to start. The onboarding wizard handles everything on
 > **Linux runtime dependencies:** The pre-built binary links against system libraries that may not be installed on minimal/VPS images:
 > ```bash
 > # Debian/Ubuntu
-> sudo apt-get install libgomp1 libasound2
+> sudo apt-get install libgomp1 libasound2t64
 > # Fedora/RHEL
 > sudo dnf install libgomp alsa-lib
 > # Arch
 > sudo pacman -S gcc-libs alsa-lib
 > ```
-> `libgomp` (GCC OpenMP) is required by the local embedding engine (`llama-cpp-2`). `libasound` is required for local speech-to-text audio I/O. macOS and Windows binaries have no extra prerequisites.
+> `libgomp1` is required for the binary to start at all: it is a hard link-time dependency of the local embedding engine (`llama-cpp-2`), and without it every command fails with `error while loading shared libraries: libgomp.so.1`. `libasound2` only enables local speech-to-text audio I/O and is loaded at runtime, so the binary starts without it. On Ubuntu 24.04 and newer the audio package is `libasound2t64`: `libasound2` is a virtual package there, so `apt-get install libasound2` aborts the whole command and installs nothing, not even `libgomp1`. macOS and Windows binaries have no extra prerequisites.
 >
 > **Local TTS (Piper) additionally requires Python 3 with the `venv` module:**
 > ```bash
@@ -2277,7 +2329,10 @@ cargo run --bin opencrabs -- migrate openclaw --dry-run
 After downloading or building, add the binary to your PATH so you can run `opencrabs` from any project directory:
 
 ```bash
-# Symlink (recommended — always points to latest build)
+# A fresh Mac has no /usr/local/bin, and both commands below fail without it.
+sudo mkdir -p /usr/local/bin
+
+# Symlink (recommended, always points to latest build)
 sudo ln -sf $(pwd)/target/release/opencrabs /usr/local/bin/opencrabs
 
 # Or copy
@@ -2311,7 +2366,7 @@ A 10-step setup wizard covers the rest of the setup. On a fresh install it does 
 
 On a fresh install there is no setup step for the LLM. The session runs on the built-in OpenCrabs provider with `deepseek-v4.1-flash`, and the first screen goes straight to chat.
 
-- The welcome names what is already set (provider, model, vision) and asks only about what is still missing: your profile in `USER.md`, speech to text, text to speech, and image generation. Answer what you want and skip the rest.
+- The welcome names what is already set (provider, model, vision, transcription, image generation) and asks only about what is still missing: your profile in `USER.md` and text to speech. Answer what you want and skip the rest.
 - To use another provider, type `/models`, or run `/onboard` and choose Advanced. On a first run, Advanced preselects OpenCrabs with its key and model already filled in, and you can pick any other provider instead.
 
 ### The 10 Steps
@@ -2966,7 +3021,10 @@ newsletters = []
 # Broadcast rails (#1485). Status updates reach a LIST of people, so they are
 # opt-in per number: an EMPTY allowlist allows nobody, which is the opposite of
 # the usual convention and is deliberate. Sends are paced; `0` or unset means
-# the conservative 5s default rather than "no pacing".
+# the conservative 5s default rather than "no pacing". The same allowlist also
+# gates the newsletter surfaces (#1827): `whatsapp_send` action
+# `create_newsletter` is refused while this list is empty, and `post_newsletter`
+# publishes only to a channel JID listed here.
 [channels.whatsapp.broadcast]
 allowed_targets = []
 min_delay_seconds = 5
@@ -3620,7 +3678,7 @@ OpenCrabs includes 40+ built-in tools. The AI can use these during conversation:
 | `read_file` | Read file contents with syntax awareness. Supports `hashline=true` mode for hash-anchored editing |
 | `write_file` | Create or modify files |
 | `edit_file` | Precise text replacements in files |
-| `hashline_edit` | Hash-anchored file editing — reference lines by 2-char content hashes instead of reproducing text. Eliminates stale-line errors and reduces token usage, especially for weaker models. Use `read_file` with `hashline=true` to get line references |
+| `hashline_edit` | Hash-anchored file editing: reference lines by the content hash `read_file` prints in hashline mode instead of reproducing text. Eliminates stale-line errors and reduces token usage, especially for weaker models. Use `read_file` with `hashline=true` to get line references |
 | `bash` | Execute shell commands — **any CLI tool on your system works** |
 | `ls` | List directory contents |
 | `glob` | Find files matching patterns |
@@ -3838,7 +3896,7 @@ Auto-detects your default Chromium-based browser and uses its native profile (co
 | `browser_content` | Get page HTML or text-only content, optionally scoped by CSS selector. Selector-scoped extraction resolves inside open shadow roots, and full-page `text_only` spans the composed tree (`body.innerText` alone stops at a shadow boundary); full-page HTML stays light-DOM |
 | `browser_wait` | Wait for a CSS selector to appear, shadow roots included (polls every 200ms, default 10s timeout) |
 | `browser_find` | Find elements by css/xpath/text/aria pattern, or with no pattern inventory ALL visible interactive elements — each returned with a stable unique `data-opencrabs-match` selector + text + tag + visibility, so the follow-up `browser_click` is deterministic (kills the screenshot-discovery loop). `css` / `text` / `aria` and the inventory search inside open shadow roots and mark those hits `[shadow]`; `xpath` is light-DOM only (XPath has no shadow boundary by spec) |
-| `browser_act` | Batched multi-action in one call: ordered `click` / `fill` / `press` / `select` / `wait` array (max 10 actions, 120s budget). All selectors resolved up front — a stale reference rejects the whole batch instead of half-running it; aborts on first failure and reports the completed prefix; one screenshot at the end |
+| `browser_act` | Batched multi-action in one call: ordered `click` / `fill` / `press` / `select` / `wait` / `upload` array (max 10 actions, 120s budget). `upload` attaches local files to a file input without putting their bytes in the context. All selectors resolved up front: a stale reference rejects the whole batch instead of half-running it; aborts on first failure and reports the completed prefix; one screenshot at the end |
 
 > **Why no Firefox?** Browser automation uses Chrome DevTools Protocol (CDP). Firefox dropped CDP support entirely — it now uses WebDriver BiDi, which is a different protocol. All Chromium-based browsers speak CDP natively.
 
@@ -4473,7 +4531,6 @@ After=network.target
 ExecStart=%h/.cargo/bin/opencrabs daemon
 Restart=on-failure
 RestartSec=5
-Environment=OPENCRABS_HOME=%h/.opencrabs
 
 [Install]
 WantedBy=default.target
@@ -5081,13 +5138,14 @@ cargo build --release
 # Small release build
 cargo build --profile release-small
 
-# Run tests (10,366 tests: 1,079 test files under src/tests/, where tests
+# Run tests (12,360 tests: 1,290 test files under src/tests/, where tests
 # belong — zero inline blocks in production files);
-# 38 slower ones are #[ignore]d to keep the default
+# 59 slower ones are #[ignore]d to keep the default
 # run fast: profile tests that touch ~/.opencrabs, browser end-to-end
 # tests, and opencode provider tests. Opt in with
-# `cargo test --all-features -- --ignored` when needed. Counts are from a
-# macOS --all-features run and are re-derived with:
+# `cargo test --all-features -- --ignored` when needed. Counts are counted
+# statically (grep for #[test]/#[tokio::test] and #[ignore] under src/) and
+# are re-derived from a real run with:
 #   cargo test --all-features --lib -- --list
 #   cargo test --all-features --lib -- --list --ignored)
 cargo test --all-features
@@ -5800,6 +5858,8 @@ Any Rust item may be renamed, moved, or removed in any release, including a patc
 
 Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
+Not a coder? Funding the subscriptions and the inference is just as useful, and it keeps every feature free for everyone: see [🫶 Sponsors](#-sponsors).
+
 ```bash
 # Setup
 git clone https://github.com/adi805/opencrabs-windows.git
@@ -5814,6 +5874,26 @@ cargo test
 ## 📄 License
 
 **MIT License** — See [LICENSE.md](LICENSE.md) for details.
+
+---
+
+## 🫶 Sponsors
+
+<!-- sponsors:start -->
+### Community funded
+
+OpenCrabs has no investors. The people below cover the subscriptions, the inference and the credits, and some of them write the code too. Totals as of October 24, 2026.
+
+| Sponsor | Role | Sponsoring since |
+|---|---|---|
+| Adolfo Usier | Creator, maintainer | February 14, 2026 |
+| Daniel Carneiro | Core maintainer | August 12, 2026 |
+| Miguel Carneiro | Financial sponsor | August 12, 2026 |
+
+To date: **€30** + **$83.25** contributed, **$450** in subscriptions, **8B to 9B tokens** of granted credits.
+
+Full ledger: [SPONSORS.md](SPONSORS.md)
+<!-- sponsors:end -->
 
 ---
 

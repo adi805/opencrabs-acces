@@ -99,24 +99,20 @@ pub fn render_gaps(gaps: &[SetupGap]) -> String {
         .join(", ")
 }
 
-/// Is image generation already available to the tools?
+/// Whether image generation has a route this install can use.
 ///
-/// Asks the question the tool itself asks: does ANY generation route
-/// resolve. `GenerateImageTool::plan_candidates` walks the provider chain
-/// first and then the global `[image.generation]` leg, so it is a strict
-/// superset of the old hand-rolled `enabled && api_key` check and an install
-/// configured the old way keeps the same answer.
-///
-/// Reading `config.image.generation` alone is what #2106 reported: the
-/// built-in provider ships `enabled = false` with no key yet serves image
-/// generation through its own `generation_model`, so every fresh built-in
-/// user was told a capability they already had was missing.
-pub(crate) fn image_generation_ready(config: &Config) -> bool {
+/// Delegates to the tool's own resolver (#2106). The global
+/// `[image.generation]` block is only ONE leg: a built-in install serves image
+/// generation through the provider chain while that block ships disabled, so
+/// the hand-rolled check told every fresh user a capability they already had
+/// was missing. `plan_candidates` walks the provider chain and then the global
+/// leg, so it is a strict superset of the old test and an install configured
+/// the old way keeps the same answer.
+pub fn image_generation_ready(config: &Config) -> bool {
     !crate::brain::tools::generate_image::GenerateImageTool::plan_candidates(config, None)
         .is_empty()
 }
 
-/// Read USER.md and the config from disk and report what is still missing.
 /// Read USER.md and the config from disk and report what is still missing.
 ///
 /// A missing USER.md counts as an empty profile. A config that fails to load
@@ -136,8 +132,11 @@ pub fn read_setup_gaps() -> Vec<SetupGap> {
     let (stt, tts, image) = match Config::load() {
         Ok(config) => {
             let voice = config.voice_config();
-            let image_ready = image_generation_ready(&config);
-            (voice.stt_enabled, voice.tts_enabled, image_ready)
+            (
+                voice.stt_enabled,
+                voice.tts_enabled,
+                image_generation_ready(&config),
+            )
         }
         Err(e) => {
             tracing::warn!(error = %e, "setup gaps: config did not load, treating voice and image as unset");

@@ -26,6 +26,54 @@ use waproto::whatsapp::Message;
 use whatsapp_rust::SendOptions;
 use whatsapp_rust::client::Client;
 
+/// True when an inbound stanza is a contact's status (story) rather than a
+/// message addressed to us.
+///
+/// Status posts arrive as group traffic on `status@broadcast`, so without this
+/// they look like a DM from the poster: a full agent turn runs on the image,
+/// and the session's reply target becomes a JID that cannot receive
+/// `send_message` (#2176). A status is never a message, so it is dropped
+/// before session resolution rather than filtered later.
+pub(crate) fn is_inbound_status(chat: &wacore_binary::jid::Jid, is_from_me: bool) -> bool {
+    !is_from_me && chat.is_status_broadcast()
+}
+
+/// Composing pings are best-effort, so the retry policy is deliberately
+/// conservative (#2181): the loop used to retry every 5 seconds forever with
+/// no connection check, which during an outage wrote one WARN per 5 seconds
+/// per session for a call that could not succeed (48 lines in 4 minutes).
+pub(crate) const COMPOSING_BASE_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Ceiling for the exponential backoff. The indicator is a nicety, not a
+/// delivery mechanism, so past 30 seconds there is nothing to gain from
+/// pinging more often.
+pub(crate) const COMPOSING_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Give up after this many consecutive failures. The turn's cancel token ends
+/// the loop anyway, so a cap only stops the pointless tail of a dead
+/// connection.
+pub(crate) const COMPOSING_MAX_FAILURES: u32 = 5;
+
+/// Delay before the next composing attempt, or `None` when the loop should
+/// stop. `failures` counts consecutive failures, reset to zero on success.
+///
+/// Pure so the policy is testable without a socket: 5s, 10s, 20s, 30s, then
+/// give up.
+pub(crate) fn composing_retry_delay(failures: u32) -> Option<std::time::Duration> {
+    if failures == 0 {
+        return Some(COMPOSING_BASE_DELAY);
+    }
+    if failures >= COMPOSING_MAX_FAILURES {
+        return None;
+    }
+    let factor = 1u64 << (failures - 1).min(3);
+    let base = COMPOSING_BASE_DELAY.as_millis() as u64;
+    let cap = COMPOSING_MAX_DELAY.as_millis() as u64;
+    Some(std::time::Duration::from_millis(
+        base.saturating_mul(factor).min(cap),
+    ))
+}
+
 /// Header prepended to all outgoing messages so the user knows it's from the agent.
 pub const MSG_HEADER: &str = "\u{1f980} *OpenCrabs*";
 
@@ -633,7 +681,7 @@ pub(crate) async fn handle_message(
     // Dropping it at ingest is the only place that stops all of that: there is
     // no chat to reply to, so no turn should ever start. Statuses are read-only
     // for a companion device anyway; nothing downstream can act on one.
-    if info.source.chat.is_status_broadcast() {
+    if is_inbound_status(&info.source.chat, info.source.is_from_me) {
         tracing::debug!(
             target: "whatsapp",
             "ignoring status update: status@broadcast is not a chattable conversation"
@@ -1290,6 +1338,18 @@ pub(crate) async fn handle_message(
         }
     };
 
+    // Second line (#2176): the drop above covers the inbound path, and this
+    // covers any future path that computes a target. A broadcast JID rejects
+    // every `send_message`, so binding a session to one costs a full turn and
+    // poisons every later progress event in that session.
+    if reply_target.is_status_broadcast() {
+        tracing::warn!(
+            target: "whatsapp",
+            "refusing to reply into status@broadcast; dropping this stanza"
+        );
+        return;
+    }
+
     // is_owner gates /new archiving and owner-only flows. The self-chat is
     // always the owner even though its LID sender won't match the configured PN.
     //
@@ -1780,34 +1840,106 @@ pub(crate) async fn handle_message(
 
     // Typing indicator — send composing every 5 s while the agent thinks
     let typing_cancel = CancellationToken::new();
+    // The agent-call token is created HERE rather than at the call because
+    // the handover tail below must watch it: `/stop` is the event that should
+    // end this indicator, and it cancels exactly this token (#1989). A
+    // follow-up no longer cancels it: since #2179 it queues behind the turn.
+    let cancel_token = CancellationToken::new();
     tokio::spawn({
         let client = client.clone();
         let chat_jid = reply_target.clone();
         let cancel = typing_cancel.clone();
+        let stop = cancel_token.clone();
         let background = agent.background_manager();
+        let agents = agent.subagent_manager();
+        let state = wa_state.clone();
         async move {
+            // #2181: check the connection before every attempt and back off on
+            // failure instead of retrying every 5s forever. The first failure
+            // of an episode is the only one worth a WARN.
+            let mut failures: u32 = 0;
             loop {
-                if let Err(e) = client.chatstate().send_composing(&chat_jid).await {
-                    tracing::warn!(error = %e, "failed to send WhatsApp composing indicator");
-                }
+                let delay = if !state.is_connected().await {
+                    failures = failures.saturating_add(1);
+                    tracing::debug!(
+                        failures,
+                        "WhatsApp not connected; skipping composing indicator"
+                    );
+                    match composing_retry_delay(failures) {
+                        Some(d) => d,
+                        None => break,
+                    }
+                } else {
+                    match client.chatstate().send_composing(&chat_jid).await {
+                        Ok(()) => {
+                            failures = 0;
+                            composing_retry_delay(0).unwrap_or(COMPOSING_BASE_DELAY)
+                        }
+                        Err(e) => {
+                            failures = failures.saturating_add(1);
+                            if failures == 1 {
+                                tracing::warn!(
+                                    error = %e,
+                                    "failed to send WhatsApp composing indicator"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    error = %e,
+                                    failures,
+                                    "composing indicator still failing"
+                                );
+                            }
+                            match composing_retry_delay(failures) {
+                                Some(d) => d,
+                                None => break,
+                            }
+                        }
+                    }
+                };
                 tokio::select! {
                     _ = cancel.cancelled() => break,
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                    _ = tokio::time::sleep(delay) => {}
                 }
             }
             // Keep composing past the end of the turn while this session still
             // has detached work (#812). Spawning a long background command ENDS
             // the turn, so without this the indicator dies at the moment the
-            // user most needs a sign that something is happening.
-            if let Some(manager) = background {
-                while manager.running_for(session_id) > 0 {
-                    if let Err(e) = client.chatstate().send_composing(&chat_jid).await {
-                        tracing::warn!(error = %e, "failed to send WhatsApp composing indicator");
+            // user most needs a sign that something is happening. This tail
+            // now runs through the shared tick (#1989): sub-agent work holds
+            // the indicator too, and `/stop` or the next turn ends it instead
+            // of leaving a second loop pinging under the new turn's indicator.
+            crate::channels::typing_tick::tick_while_detached(
+                background,
+                agents,
+                session_id,
+                Some(stop.clone()),
+                std::time::Duration::from_secs(5),
+                // #1984: the tail is bounded even if some row leaks every
+                // stuck-entry cleanup (the stop token already ends it on
+                // /stop or a new turn, #1989).
+                crate::channels::typing_tick::DEFAULT_TICK_CEILING,
+                || async {
+                    // #2181: the detached tail pings on its own cadence, so it
+                    // needs the same connection check. A dead socket must not
+                    // produce one WARN per tick.
+                    if !state.is_connected().await {
+                        return;
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                }
-            }
-            if let Err(e) = client.chatstate().send_paused(&chat_jid).await {
+                    if let Err(e) = client.chatstate().send_composing(&chat_jid).await {
+                        tracing::debug!(
+                            error = %e,
+                            "failed to send WhatsApp composing indicator"
+                        );
+                    }
+                },
+            )
+            .await;
+            // Paused only when the work ended on its own: after a `/stop` or
+            // a new turn, the silence (or the new turn's composing) is owned
+            // elsewhere, and a stale paused would snuff it.
+            if !stop.is_cancelled()
+                && let Err(e) = client.chatstate().send_paused(&chat_jid).await
+            {
                 tracing::warn!(error = %e, "failed to send WhatsApp paused indicator");
             }
         }
@@ -1941,79 +2073,15 @@ pub(crate) async fn handle_message(
                 let interactive = interactive_cb;
                 let raw_options: Vec<String> = options.into_iter().map(|item| item.label).collect();
                 tokio::spawn(async move {
-                    let numbered: String = raw_options
-                        .iter()
-                        .enumerate()
-                        .map(|(i, o)| format!("{}. {}", i + 1, o))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let body = format!(
-                        "\u{1f4a1} Suggested next:\n\n{numbered}\n\nReply with a number, or type your own."
-                    );
-                    let buttons: Vec<super::interactive::Button> = raw_options
-                        .iter()
-                        .enumerate()
-                        .map(|(i, o)| {
-                            super::interactive::Button::new(
-                                format!("wa_suggest_{}", i + 1),
-                                o.clone(),
-                            )
-                        })
-                        .collect();
-                    use super::interactive::SuggestionSurface;
-                    // Over the button cap, a poll is the only one-tap surface
-                    // WhatsApp offers. A vote is matched back by label, so the
-                    // pending set has to be stashed before the send either way.
-                    let surface =
-                        super::interactive::suggestion_surface(raw_options.len(), interactive);
-                    wa.set_pending_followups(session_id, raw_options.clone())
-                        .await;
-
-                    if surface == SuggestionSurface::Poll {
-                        match client
-                            .polls()
-                            .create(
-                                jid.clone(),
-                                "\u{1f4a1} Suggested next: tap one, or reply with the number.",
-                                &raw_options,
-                                1,
-                            )
-                            .await
-                        {
-                            Ok((result, _secret)) => {
-                                // Votes name options by hash, so the poll's own
-                                // option list is the only way to read one back.
-                                wa.polls.remember(result.message_id, raw_options).await;
-                                return;
-                            }
-                            Err(e) => {
-                                // Not fatal: the numbered list below still
-                                // selects by number, so the turn degrades to
-                                // the text path rather than losing the
-                                // suggestions entirely.
-                                tracing::warn!(
-                                    error = %e,
-                                    "WhatsApp: suggestion poll failed, falling back to the numbered list"
-                                );
-                            }
-                        }
-                    }
-
-                    let msg = if surface == SuggestionSurface::Card {
-                        super::interactive::build(
-                            &body,
-                            Some("Tap an option, or reply with the number."),
-                            &buttons,
-                        )
-                    } else {
-                        waproto::whatsapp::Message {
-                            conversation: Some(body),
-                            ..Default::default()
-                        }
-                    };
-                    if let Err(e) = client.send_message(jid, msg).await {
-                        tracing::warn!(error = %e, "failed to send WhatsApp message");
-                    }
+                    super::followups::send_suggestions(
+                        client,
+                        jid,
+                        wa,
+                        session_id,
+                        raw_options,
+                        interactive,
+                    )
+                    .await;
                 });
             }
             _ => {}
@@ -2149,8 +2217,10 @@ pub(crate) async fn handle_message(
         })
     };
 
-    // Send to agent with WhatsApp approval + progress callbacks
-    let cancel_token = CancellationToken::new();
+    // Send to agent with WhatsApp approval + progress callbacks.
+    // `cancel_token` itself is created further up, where the typing task
+    // spawns: the handover tail must watch it too (#1989). This call still
+    // wires it to the agent call and to `/stop`.
     wa_state
         .store_cancel_token(session_id, cancel_token.clone())
         .await;

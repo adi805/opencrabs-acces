@@ -36,7 +36,7 @@ async fn a_large_json_body_is_truncated_by_the_output_budget() {
 
     assert!(result.success);
     assert!(
-        result.output.contains("truncated to"),
+        result.output.contains("cut at"),
         "a large JSON body must hit the shared output budget"
     );
     assert!(
@@ -67,7 +67,7 @@ async fn a_large_text_body_is_truncated_by_the_output_budget() {
 
     assert!(result.success);
     assert!(
-        result.output.contains("truncated to"),
+        result.output.contains("cut at"),
         "a large text body must hit the shared output budget"
     );
 }
@@ -95,7 +95,7 @@ async fn a_small_body_passes_through_intact() {
         result.output
     );
     assert!(
-        !result.output.contains("truncated"),
+        !result.output.contains("cut at"),
         "a small body must not be marked truncated"
     );
 }
@@ -105,9 +105,9 @@ async fn a_body_over_the_read_ceiling_is_cut_and_says_so() {
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    // Just past the 10 MiB read ceiling, as plain text so the byte count maps
-    // directly onto the ceiling. The point is that the read stops there instead
-    // of buffering the whole thing.
+    // Far past the read cap, as plain text so the byte count maps directly onto
+    // it. The point is that the read stops there instead of buffering the whole
+    // thing.
     let body = "z".repeat(10 * 1024 * 1024 + 4096);
 
     let _mock = server
@@ -123,7 +123,7 @@ async fn a_body_over_the_read_ceiling_is_cut_and_says_so() {
 
     assert!(result.success);
     assert!(
-        result.output.contains("read ceiling"),
-        "a body past the read ceiling must report the cut"
+        result.output.contains("while reading"),
+        "a body past the read cap must report the cut"
     );
 }

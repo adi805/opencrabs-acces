@@ -238,7 +238,13 @@ pub(crate) async fn spawn_cron_scheduler_for_profile(profile_name: String) {
             // Each profile has its own config.toml, so it needs its own
             // migration pass — `load()` no longer does this implicitly (#912).
             crate::config::Config::migrate_config_files();
-            let config = crate::config::Config::load()?;
+            let mut config = crate::config::Config::load()?;
+            // #2151: an adopted profile never opened the TUI either, so its
+            // cron jobs hit the same empty-token wall as `run` did. Provision
+            // inside this profile's home scope. The global config mirror is
+            // deliberately left alone: it belongs to the active profile.
+            crate::brain::provider::opencrabs_acquire::provision_builtin_provider(&mut config)
+                .await;
             let db = Database::connect(&config.database.path).await?;
             db.run_migrations().await?;
             let service_context = ServiceContext::new(db.pool().clone());
@@ -263,9 +269,11 @@ pub(crate) async fn spawn_cron_scheduler_for_profile(profile_name: String) {
                 shared_session.clone(),
                 config_rx,
             ));
-            // #129: this factory builds agents ONLY for cron execution —
-            // headless backstop flag on every agent it creates.
-            factory.set_headless(true);
+            // #129 + #2161: this factory builds agents ONLY for cron
+            // execution. Headless backstop AND plan-gate exemption on every
+            // agent it creates, through one helper so the two flags cannot
+            // drift apart again.
+            crate::channels::configure_cron_factory(&factory);
             // Wire the tool registry into the daemon's factory — WITHOUT this the
             // cron agents got an empty registry and every job ran toolless
             // ("Tool not found: bash"). The interactive path sets this via
@@ -815,6 +823,7 @@ async fn cmd_chat_inner(
                 ProgressEvent::ToolStarted {
                     tool_name,
                     tool_input,
+                    ..
                 } => progress_sender.send(TuiEvent::ToolCallStarted {
                     session_id,
                     tool_name,
@@ -825,12 +834,36 @@ async fn cmd_chat_inner(
                     tool_input,
                     success,
                     summary,
+                    ..
                 } => progress_sender.send(TuiEvent::ToolCallCompleted {
                     session_id,
                     tool_name,
                     tool_input,
                     success,
                     summary,
+                }),
+                // #2145: the core now emits these while the turn is live, so
+                // the TUI can draw a detached task as ONE row in the block
+                // that holds the `bash` call that detached it, then update
+                // that row when the finish arrives (#2146).
+                ProgressEvent::DetachedTaskStarted { task_id, label } => {
+                    progress_sender.send(TuiEvent::DetachedTaskStarted {
+                        session_id,
+                        task_id,
+                        label,
+                    })
+                }
+                ProgressEvent::DetachedTaskFinished {
+                    task_id,
+                    label,
+                    success,
+                    elapsed_secs,
+                } => progress_sender.send(TuiEvent::DetachedTaskFinished {
+                    session_id,
+                    task_id,
+                    label,
+                    success,
+                    elapsed_secs,
                 }),
                 ProgressEvent::IntermediateText { text, reasoning } => {
                     progress_sender.send(TuiEvent::IntermediateText {
@@ -1190,9 +1223,10 @@ async fn cmd_chat_inner(
                 tokio::time::timeout(std::time::Duration::from_secs(120), response_rx.recv())
                     .await
                     .map_err(|_| {
-                        crate::brain::agent::AgentError::Internal(
-                            "Sudo password request timed out (120s)".to_string(),
-                        )
+                        crate::brain::agent::AgentError::Internal(format!(
+                            "Sudo password request timed out (120s). {}",
+                            crate::brain::tools::bash::sudo_access_hint_cached()
+                        ))
                     })?
                     .ok_or_else(|| {
                         crate::brain::agent::AgentError::Internal(

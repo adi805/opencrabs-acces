@@ -2123,11 +2123,12 @@ pub(crate) async fn handle_message(
     // into the agent prompt.
     let reply_context = if let Some(reply) = msg.reply_to_message() {
         let mut full_text = reply.text().or(reply.caption()).unwrap_or("").to_string();
-        // #2121: a media message arrives as `text() == None` plus a caption,
-        // so this string is the caption and nothing else. Naming the kind here
-        // is what lets the context below say "this is a photo" instead of
-        // handing the agent a caption it cannot resolve to any artifact.
-        let reply_media = media_kind_of(reply);
+        // #2121: for media, `text()` is None and `caption()` is the caption, so
+        // this line used to be the whole story and the media handle was dropped
+        // on the floor. The agent was told the reply was readable while the
+        // only thing it had was the caption, and it answered about the wrong
+        // artifact. `reply_media` is what keeps the identity alive.
+        let reply_media = ReplyMediaKind::of(reply);
         let quote_text = msg.quote().map(|q| q.text.as_str()).unwrap_or("");
         // #548: in a forum topic EVERY ordinary message carries the
         // topic-creation service message as its reply target, so this branch
@@ -2182,6 +2183,10 @@ pub(crate) async fn handle_message(
         // message, so the lookup can only ever waste a query — and a store hit
         // on it would inject the topic's own metadata as if it were the
         // content the user replied to.
+        // A captioned media message is never empty, so gating this on
+        // `full_text.is_empty()` skipped the lookup for exactly the case that
+        // needed it most (#2121). The stored row is the only place the
+        // attachment path lives, so media runs it even when a caption exists.
         if (full_text.is_empty() || reply_media.is_some()) && !target_is_topic_root {
             let chat_id_str = msg.chat.id.0.to_string();
             let reply_pmid = reply.id.0.to_string();
@@ -2190,13 +2195,13 @@ pub(crate) async fn handle_message(
                 .await
             {
                 Ok(Some(content)) => {
-                    // A captioned photo used to stop at the caption because
-                    // this lookup only ran for empty text (#2121). Replace the
-                    // caption with the stored row only when that row carries
-                    // the attachment path: the pathless twin is worse than the
-                    // caption it duplicates.
-                    if full_text.is_empty() || attachment_path_in(&content).is_some() {
+                    // Keep the caption when the stored row does not supersede
+                    // it: the caption is usually the user's own words about the
+                    // file, and dropping it loses their question (#2121).
+                    if full_text.is_empty() || content.contains("[file: ") {
                         full_text = content;
+                    } else if !content.contains(full_text.trim()) {
+                        full_text = format!("{full_text}\n{content}");
                     }
                     tracing::info!(
                         "Telegram reply context: recovered EXACT replied-to message by id {reply_pmid} ({} chars, media={:?}, attachment={})",
@@ -2215,6 +2220,19 @@ pub(crate) async fn handle_message(
                 }
             }
         }
+        // A media reply must never reach the agent as a bare caption (#2121).
+        // When the file could not be resolved (the bot never saw the message,
+        // or it predates attachment storage), the context has to say so, or the
+        // agent answers confidently about an image it cannot see.
+        let media_note = reply_media
+            .filter(|_| !target_is_topic_root && !full_text.contains("[file: "))
+            .map(|kind| {
+                format!(
+                    "The replied-to message is a {} and its file was not stored locally, so you \
+                     cannot see it. If you need to look at it, ask the user to send it again.",
+                    kind.label()
+                )
+            });
         // If the exact lookup found nothing we genuinely cannot read the
         // replied-to content: Telegram delivers rich bot messages (and
         // cron-delivered messages) with empty text and, when sent before id
@@ -2261,18 +2279,13 @@ pub(crate) async fn handle_message(
             false
         };
 
-        let media_note =
-            reply_media.map(|kind| media_reference_note(kind, reply_attachment.as_deref()));
-        let ctx = compose_reply_context(
-            resolve_reply_context_pruned(
-                &reply_sender,
-                &full_clean,
-                &quote_clean,
-                unrecoverable_reply,
-                full_in_context,
-            ),
+        let ctx = resolve_reply_context_pruned(
             &reply_sender,
-            media_note,
+            &full_clean,
+            &quote_clean,
+            unrecoverable_reply,
+            full_in_context,
+            media_note.as_deref(),
         );
         // The two new booleans are logged because the field reports that
         // produced #548 could only be read as "ctx=None, reason unknown" —
@@ -2282,7 +2295,8 @@ pub(crate) async fn handle_message(
         tracing::info!(
             "Telegram reply context: chat_id={}, has_reply_to=true, \
              has_quote={}, quote_is_manual={:?}, quote_text_len={}, \
-             full_text_len={}, topic_root={}, unrecoverable={}, in_context={}, ctx={:?}",
+             full_text_len={}, topic_root={}, unrecoverable={}, in_context={}, media={:?}, \
+             media_note={}, ctx={:?}",
             msg.chat.id.0,
             msg.quote().is_some(),
             msg.quote().map(|q| q.is_manual),
@@ -2291,6 +2305,8 @@ pub(crate) async fn handle_message(
             target_is_topic_root,
             unrecoverable_reply,
             full_in_context,
+            reply_media,
+            media_note.is_some(),
             ctx,
         );
         ctx
@@ -2851,14 +2867,7 @@ pub(crate) async fn handle_message(
     // block's final shape (post take_folded_final).
     let flow_outcome = match &result {
         Ok(_) => FlowOutcome::Finished,
-        Err(e) => {
-            let es = e.to_string().to_lowercase();
-            if es.contains("timed out") || es.contains("timeout") || es.contains("deadline") {
-                FlowOutcome::TimedOut
-            } else {
-                FlowOutcome::Failed
-            }
-        }
+        Err(e) => crate::channels::background_work::outcome_for_error(e),
     };
 
     if !deliver_final_response(
@@ -3378,7 +3387,60 @@ pub(crate) fn resolve_reply_context(
     quote_clean: &str,
     unrecoverable_reply: bool,
 ) -> Option<String> {
-    resolve_reply_context_pruned(sender, full_clean, quote_clean, unrecoverable_reply, false)
+    resolve_reply_context_pruned(
+        sender,
+        full_clean,
+        quote_clean,
+        unrecoverable_reply,
+        false,
+        None,
+    )
+}
+
+/// Which media a replied-to message carries (#2121).
+///
+/// A media message arrives with `text() == None` and the caption in
+/// `caption()`, so the media handle used to be dropped on the floor and the
+/// reply context carried the caption alone. This names the media so the reply
+/// path can look its stored attachment up and, when there is none, say so
+/// instead of implying the file is readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplyMediaKind {
+    Photo,
+    Video,
+    Animation,
+    VideoNote,
+    Document,
+}
+
+impl ReplyMediaKind {
+    /// The media the message carries, if any.
+    pub(crate) fn of(msg: &Message) -> Option<Self> {
+        if msg.photo().is_some() {
+            Some(Self::Photo)
+        } else if msg.video().is_some() {
+            Some(Self::Video)
+        } else if msg.animation().is_some() {
+            Some(Self::Animation)
+        } else if msg.video_note().is_some() {
+            Some(Self::VideoNote)
+        } else if msg.document().is_some() {
+            Some(Self::Document)
+        } else {
+            None
+        }
+    }
+
+    /// How the kind reads in the reply context.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Photo => "photo",
+            Self::Video => "video",
+            Self::Animation => "animation",
+            Self::VideoNote => "video note",
+            Self::Document => "document",
+        }
+    }
 }
 
 /// Media kind carried by a message, when it has one (#2121).
@@ -3388,6 +3450,12 @@ pub(crate) fn resolve_reply_context(
 /// dropped on the floor. Naming the kind is what lets the context say "this is
 /// a photo" even when no path could be resolved, so a caption is never again
 /// mistaken for the whole of the message the user replied to.
+///
+/// The live reply path now names the kind through [`ReplyMediaKind`] (#2121,
+/// upstream's refinement keeps the user's caption and appends the stored row),
+/// so this stays for the fork's own context tests and for callers that only
+/// need the label.
+#[allow(dead_code)]
 pub(crate) fn media_kind_of(msg: &teloxide::types::Message) -> Option<&'static str> {
     if msg.photo().is_some() {
         Some("photo")
@@ -3452,6 +3520,7 @@ pub(crate) fn attachment_path_in(content: &str) -> Option<&str> {
 /// explicit unresolved line. A caption with no media reference is exactly the
 /// state that let the agent answer about the wrong artifact (#2121), so the
 /// unresolved case says so instead of degrading back to the caption.
+#[allow(dead_code)]
 pub(crate) fn media_reference_note(kind: &str, path: Option<&str>) -> String {
     match path {
         Some(p) if kind == "photo" => format!("media: photo, image: <<IMG:{p}>>"),
@@ -3470,6 +3539,7 @@ pub(crate) fn media_reference_note(kind: &str, path: Option<&str>) -> String {
 /// tell which artifact was meant. When there is no other context the note
 /// stands alone rather than being dropped, which is the captionless-media case
 /// that used to resolve to nothing at all.
+#[allow(dead_code)]
 pub(crate) fn compose_reply_context(
     ctx: Option<String>,
     sender: &str,
@@ -3488,8 +3558,10 @@ pub(crate) fn resolve_reply_context_pruned(
     quote_clean: &str,
     unrecoverable_reply: bool,
     full_in_context: bool,
+    media_note: Option<&str>,
 ) -> Option<String> {
-    match format_reply_context_pruned(sender, full_clean, quote_clean, full_in_context) {
+    match format_reply_context_pruned(sender, full_clean, quote_clean, full_in_context, media_note)
+    {
         Some(c) => Some(c),
         None if unrecoverable_reply => Some(format!(
             "[Replying to {sender}, but the exact content of that message could not be retrieved \
@@ -3506,7 +3578,7 @@ pub(crate) fn format_reply_context(
     reply_full_text: &str,
     quote_text: &str,
 ) -> Option<String> {
-    format_reply_context_pruned(sender, reply_full_text, quote_text, false)
+    format_reply_context_pruned(sender, reply_full_text, quote_text, false, None)
 }
 
 /// Longest excerpt a pruned reply pointer carries (#548).
@@ -3542,33 +3614,42 @@ pub(crate) fn format_reply_context_pruned(
     reply_full_text: &str,
     quote_text: &str,
     full_in_context: bool,
+    media_note: Option<&str>,
 ) -> Option<String> {
     let full = reply_full_text.trim();
     let quote = quote_text.trim();
+    let media = media_note.map(str::trim).filter(|n| !n.is_empty());
     if full.is_empty() && quote.is_empty() {
-        return None;
+        // #2121: a media message carries no text at all. Returning None here
+        // made the reply indistinguishable from "no reply", so the agent
+        // answered about a photo it had never been told existed. The note is
+        // the only thing that can speak for the file, so it becomes the
+        // context.
+        return media.map(|note| format!("[Replying to {sender}. {note}]"));
     }
-    if full_in_context {
+    let base = if full_in_context {
         if !quote.is_empty() {
-            Some(format!(
-                "[Replying to {sender}, user highlighted: \"{quote}\"]"
-            ))
+            format!("[Replying to {sender}, user highlighted: \"{quote}\"]")
         } else {
-            Some(format!(
+            format!(
                 "[Replying to {sender}, the message beginning: \"{}\" — it is already in your \
                  context above]",
                 reply_excerpt(full)
-            ))
+            )
         }
     } else if !quote.is_empty() && quote != full && !full.is_empty() {
-        Some(format!(
-            "[Replying to {sender}, user highlighted: \"{quote}\"\nFull message: \"{full}\"]"
-        ))
+        format!("[Replying to {sender}, user highlighted: \"{quote}\"\nFull message: \"{full}\"]")
     } else if !quote.is_empty() {
-        Some(format!("[Replying to {sender}: \"{quote}\"]"))
+        format!("[Replying to {sender}: \"{quote}\"]")
     } else {
-        Some(format!("[Replying to {sender}: \"{full}\"]"))
-    }
+        format!("[Replying to {sender}: \"{full}\"]")
+    };
+    // A captioned media message reaches this point as ordinary text, so the
+    // media note rides along instead of replacing it (#2121).
+    Some(match media {
+        Some(note) => format!("{base} {note}"),
+        None => base,
+    })
 }
 
 /// Extract a short, status-line-friendly excerpt from the agent's

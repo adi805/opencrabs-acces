@@ -1,14 +1,7 @@
 //! Usage Ledger Repository
 //!
 //! Cumulative usage tracking that persists across session deletes and compaction.
-//!
-//! Entries are append-only and never deleted: nothing rewrites a row, nothing
-//! ages one out, and a session purge leaves them in place. That last one is
-//! deliberate rather than incidental (F-DB-03). The ledger is cumulative
-//! accounting, not session data: every query over it (`totals`,
-//! `stats_by_model`, `by_provider`) is all-time and joins nothing, so a purged
-//! session's rows are still the only record of what that session cost, and
-//! deleting them would shrink the all-time total silently.
+//! Entries are append-only — never deleted.
 
 use crate::db::Pool;
 use crate::db::database::interact_err;
@@ -136,6 +129,7 @@ impl UsageLedgerRepository {
     /// `cache_read_tokens` is the provider-reported cache-read count for the
     /// turn, or `None` when nothing reported one, which keeps the row out of
     /// the By Model cache share instead of counting it as a zero (#2027).
+    #[allow(clippy::too_many_arguments)]
     pub async fn record(
         &self,
         session_id: &str,
@@ -144,6 +138,7 @@ impl UsageLedgerRepository {
         token_count: i64,
         cost: f64,
         cache_read_tokens: Option<i64>,
+        prompt_tokens: Option<i64>,
     ) -> Result<()> {
         let sid = session_id.to_string();
         let prov = provider.to_string();
@@ -154,8 +149,8 @@ impl UsageLedgerRepository {
             .context("Failed to get connection")?
             .interact(move |conn| {
                 conn.execute(
-                    "INSERT INTO usage_ledger (session_id, provider, model, token_count, cost, cache_read_tokens) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![sid, prov, mdl, token_count, cost, cache_read_tokens],
+                    "INSERT INTO usage_ledger (session_id, provider, model, token_count, cost, cache_read_tokens, prompt_tokens) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![sid, prov, mdl, token_count, cost, cache_read_tokens, prompt_tokens],
                 )
             })
             .await
@@ -251,20 +246,7 @@ impl UsageLedgerRepository {
             .context("Failed to query usage totals")
     }
 
-    /// Get usage stats grouped by model.
-    ///
-    /// The grouping key comes from [`normalize_model_name`], in Rust, over the
-    /// distinct raw names the ledger holds. The aggregate used to carry its own
-    /// copy of that normalization in SQL, and the two had drifted (F-DB-04), so
-    /// `/usage` could list one model twice: a row written as `k3` became
-    /// `kimi-k3` on the way in and stayed `k3` on the way out. One
-    /// implementation is the fix, and the only reason this can be done cheaply
-    /// is that the ledger holds one row per call rather than one per token.
-    ///
-    /// Ordering is by cost, then by canonical name: two models that cost the same
-    /// would otherwise come back in whatever order the map happened to produce,
-    /// and a caller that renders the top row would show a different one run to
-    /// run.
+    /// Get usage stats grouped by model (normalizes "claude-X" → "X" to merge duplicates)
     pub async fn stats_by_model(&self) -> Result<Vec<ModelUsageStats>> {
         let raw: Vec<(String, i64, f64, i64)> = self
             .pool

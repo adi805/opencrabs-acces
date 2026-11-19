@@ -15,13 +15,13 @@ async fn test_record_and_totals() {
     db.run_migrations().await.expect("Failed to run migrations");
     let repo = UsageLedgerRepository::new(db.pool().clone());
 
-    repo.record("s1", "prov", "sonnet-4-5", 100, 0.05, None)
+    repo.record("s1", "prov", "sonnet-4-5", 100, 0.05, None, None)
         .await
         .unwrap();
-    repo.record("s1", "prov", "sonnet-4-5", 200, 0.10, None)
+    repo.record("s1", "prov", "sonnet-4-5", 200, 0.10, None, None)
         .await
         .unwrap();
-    repo.record("s2", "prov", "opus-4-6", 500, 0.50, None)
+    repo.record("s2", "prov", "opus-4-6", 500, 0.50, None, None)
         .await
         .unwrap();
 
@@ -38,13 +38,13 @@ async fn test_stats_by_model() {
     db.run_migrations().await.expect("Failed to run migrations");
     let repo = UsageLedgerRepository::new(db.pool().clone());
 
-    repo.record("s1", "prov", "sonnet", 100, 0.05, None)
+    repo.record("s1", "prov", "sonnet", 100, 0.05, None, None)
         .await
         .unwrap();
-    repo.record("s2", "prov", "opus", 500, 0.50, None)
+    repo.record("s2", "prov", "opus", 500, 0.50, None, None)
         .await
         .unwrap();
-    repo.record("s3", "prov", "sonnet", 200, 0.10, None)
+    repo.record("s3", "prov", "sonnet", 200, 0.10, None, None)
         .await
         .unwrap();
 
@@ -65,13 +65,13 @@ async fn test_stats_by_model_merges_claude_prefix() {
     db.run_migrations().await.expect("Failed to run migrations");
     let repo = UsageLedgerRepository::new(db.pool().clone());
 
-    repo.record("s1", "prov", "claude-opus-4-6", 1000, 1.0, None)
+    repo.record("s1", "prov", "claude-opus-4-6", 1000, 1.0, None, None)
         .await
         .unwrap();
-    repo.record("s2", "prov", "opus-4-6", 500, 0.50, None)
+    repo.record("s2", "prov", "opus-4-6", 500, 0.50, None, None)
         .await
         .unwrap();
-    repo.record("s3", "prov", "claude-sonnet-4-6", 200, 0.10, None)
+    repo.record("s3", "prov", "claude-sonnet-4-6", 200, 0.10, None, None)
         .await
         .unwrap();
 
@@ -174,6 +174,7 @@ async fn provider_breakdowns_group_filter_and_handle_unknown() {
         100,
         1.0,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -184,13 +185,14 @@ async fn provider_breakdowns_group_filter_and_handle_unknown() {
         200,
         2.0,
         None,
+        None,
     )
     .await
     .unwrap();
-    repo.record("s3", "custom.opencode-go", "mimo-v2.5", 50, 0.5, None)
+    repo.record("s3", "custom.opencode-go", "mimo-v2.5", 50, 0.5, None, None)
         .await
         .unwrap();
-    repo.record("s4", "", "mystery-model", 10, 0.1, None)
+    repo.record("s4", "", "mystery-model", 10, 0.1, None, None)
         .await
         .unwrap();
 
@@ -279,7 +281,7 @@ async fn a_raw_legacy_spelling_groups_with_its_canonical_name() {
     let repo = UsageLedgerRepository::new(db.pool().clone());
 
     // The writer normalizes, so this row is stored as kimi-k3.
-    repo.record("s1", "prov", "kimi-k3", 100, 0.10, None)
+    repo.record("s1", "prov", "kimi-k3", 100, 0.10, None, None)
         .await
         .unwrap();
 
@@ -325,10 +327,10 @@ async fn equal_cost_models_have_a_deterministic_order() {
     let repo = UsageLedgerRepository::new(db.pool().clone());
 
     // Same cost, opposite insertion order from the alphabetical one.
-    repo.record("s1", "prov", "glm-5.1", 10, 0.25, None)
+    repo.record("s1", "prov", "glm-5.1", 10, 0.25, None, None)
         .await
         .unwrap();
-    repo.record("s1", "prov", "opus", 10, 0.25, None)
+    repo.record("s1", "prov", "opus", 10, 0.25, None, None)
         .await
         .unwrap();
 

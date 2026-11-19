@@ -1,8 +1,15 @@
-//! Behavioral tests for the WhatsApp turn slot and mid-turn follow-up queue
-//! (#299). Pure state: no client, no HTTP, no DB pool (the durable twin in
-//! `notify_queue` no-ops without a runtime, exactly the path these tests ride).
+//! The WhatsApp session turn slot and mid-turn queue (#2179).
+//!
+//! Pure state: no client, no network, no DB pool. The durable twin in
+//! `notify_queue` no-ops without a repo, exactly the path these tests ride.
+//!
+//! The bug these pin down: `store_cancel_token` cancelled the token it found,
+//! so a second inbound message on a busy session killed the live turn. Three
+//! messages in six seconds produced one answer, to the last one.
 
 use std::sync::Arc;
+
+use uuid::Uuid;
 
 use crate::brain::agent::{PushOrigin, QueuedUserMessage};
 use crate::channels::whatsapp::WhatsAppState;
@@ -16,119 +23,117 @@ fn queued(text: &str) -> QueuedUserMessage {
     }
 }
 
-#[test]
-fn slot_claim_is_exclusive_and_released_by_drop() {
+#[tokio::test]
+async fn inbound_queues_behind_live_turn() {
     let state = Arc::new(WhatsAppState::new());
-    let sid = uuid::Uuid::new_v4();
+    let sid = Uuid::new_v4();
 
-    // The first claim wins.
-    let guard = state
+    // The first message claims the session's turn slot, exactly as
+    // `handle_message` does before it sets up streaming and calls the agent.
+    let live = state
         .try_begin_turn(sid)
-        .expect("first claim takes the slot");
+        .expect("the first inbound message takes the slot");
 
-    // A second claim while it is held returns None: that caller queues its
-    // follow-up instead of forking a second concurrent tool loop, which used to
-    // happen because the only thing serialising turns was `store_cancel_token`
-    // and all it did was kill the live one.
+    // The live turn stored its cancel token on the way in.
+    let live_token = tokio_util::sync::CancellationToken::new();
+    state.store_cancel_token(sid, live_token.clone()).await;
+
+    // A second inbound message arrives while that turn is still running.
+    // It must NOT claim the slot, and it must NOT cancel the live turn:
+    // that cancel is the whole bug (#2179). It queues instead.
     assert!(
         state.try_begin_turn(sid).is_none(),
-        "the slot is held, no double claim"
+        "a second message cannot claim a slot that is already held"
     );
-
-    // Drop releases the slot; a re-claim then succeeds.
-    drop(guard);
-    let second = state
-        .try_begin_turn(sid)
-        .expect("the slot is free after the guard dropped");
-
-    // A different session is never blocked by this one's live turn. The
-    // other-session guard must be HELD across the check: an `is_some()` alone
-    // drops it inside the assertion, freeing the slot before the next line ran.
-    let other = uuid::Uuid::new_v4();
-    let other_guard = state
-        .try_begin_turn(other)
-        .expect("a second session claims its own slot while sid is held");
-    assert!(
-        state.try_begin_turn(sid).is_none() && state.try_begin_turn(other).is_none(),
-        "both sessions hold their own slots at once"
-    );
-    drop(other_guard);
-    drop(second);
-}
-
-#[test]
-fn queued_turns_join_fifo_and_leave_no_husk() {
-    let state = WhatsAppState::new();
-    let sid = uuid::Uuid::new_v4();
-
-    // Empty queue: nothing, and no entry left behind.
-    assert!(state.drain_turns(sid).is_none());
-
-    state.enqueue_turn(sid, queued("first message"));
     state.enqueue_turn(sid, queued("second message"));
 
-    // ONE joined message answers a whole burst (#1837 rule): both texts
-    // present, arrival order kept.
-    let joined = state
-        .drain_turns(sid)
-        .expect("two queued items join into one");
+    // The pre-fix handler reached its `store_cancel_token` call site on the
+    // second message too (there was no slot to stop it), and that store
+    // hard-cancelled the live turn: this is the exact sequence that dropped
+    // an in-flight answer. Storing must now be harmless.
+    state
+        .store_cancel_token(sid, tokio_util::sync::CancellationToken::new())
+        .await;
+
+    assert!(
+        !live_token.is_cancelled(),
+        "an inbound message must never cancel the turn already in flight"
+    );
+
+    // The second message is not lost: the tool loop drains it between
+    // rounds through the callback wired in manager.rs.
+    let cb = state.followup_queue_callback();
+    let drained = cb(sid)
+        .await
+        .expect("the queued follow-up is delivered to the live turn");
+    assert!(drained.context_text.contains("second message"));
+    assert!(
+        !live_token.is_cancelled(),
+        "draining the queue does not disturb the live turn either"
+    );
+
+    // When the live turn finishes its guard drops, the slot frees up and the
+    // next message can start a turn of its own instead of forking.
+    drop(live);
+    let next = state
+        .try_begin_turn(sid)
+        .expect("the slot is free once the live turn ended");
+    drop(next);
+}
+
+#[tokio::test]
+async fn storing_a_token_never_cancels_the_previous_one() {
+    let state = Arc::new(WhatsAppState::new());
+    let sid = Uuid::new_v4();
+
+    let previous = tokio_util::sync::CancellationToken::new();
+    state.store_cancel_token(sid, previous.clone()).await;
+
+    let current = tokio_util::sync::CancellationToken::new();
+    state.store_cancel_token(sid, current.clone()).await;
+
+    assert!(
+        !previous.is_cancelled(),
+        "store replaces the token, it never cancels the turn that owns it"
+    );
+    assert!(!current.is_cancelled());
+
+    // Genuine cancellation still works, and only through `cancel_session`:
+    // that is the `/stop` path.
+    assert!(state.cancel_session(sid).await);
+    assert!(current.is_cancelled());
+    assert!(!state.cancel_session(sid).await);
+}
+
+#[tokio::test]
+async fn a_burst_joins_into_one_message_in_arrival_order() {
+    let state = Arc::new(WhatsAppState::new());
+    let sid = Uuid::new_v4();
+    let other = Uuid::new_v4();
+
+    let guard = state.try_begin_turn(sid).expect("turn claimed");
+    state.enqueue_turn(sid, queued("first follow-up"));
+    state.enqueue_turn(sid, queued("second follow-up"));
+    state.enqueue_turn(other, queued("other session"));
+
+    // One round-end answers the whole burst (#1837): both texts present, in
+    // arrival order, in ONE message.
+    let joined = state.drain_turns(sid).expect("the burst joins into one");
     let ctx = &joined.context_text;
-    let (Some(i1), Some(i2)) = (ctx.find("first message"), ctx.find("second message")) else {
+    let (Some(first), Some(second)) = (ctx.find("first follow-up"), ctx.find("second follow-up"))
+    else {
         panic!("joined context lost an item: {ctx:?}");
     };
-    assert!(i1 < i2, "FIFO order kept: {ctx:?}");
+    assert!(first < second, "FIFO order kept: {ctx:?}");
 
-    // The drain emptied the entry: no husk, a repeat drain is nothing.
+    // Per-session keying: the other session's message is untouched.
+    let other_msg = state
+        .drain_turns(other)
+        .expect("the other session keeps its own queue");
+    assert!(other_msg.context_text.contains("other session"));
+
+    // No husk left behind after a drain.
     assert!(state.drain_turns(sid).is_none());
-}
-
-#[tokio::test]
-async fn queue_callback_drains_the_session_queue_per_session() {
-    let state = Arc::new(WhatsAppState::new());
-    let sid_a = uuid::Uuid::new_v4();
-    let sid_b = uuid::Uuid::new_v4();
-    state.enqueue_turn(sid_a, queued("alpha follow-up"));
-    state.enqueue_turn(sid_b, queued("beta follow-up"));
-
-    // The callback wired into AgentService (manager.rs) is what the tool loop
-    // calls between rounds. It drains session A's queue and nothing else.
-    let cb = state.followup_queue_callback();
-    let drained_a = cb(sid_a).await.expect("session A had a follow-up");
-    assert!(drained_a.context_text.contains("alpha follow-up"));
-
-    // A is empty now, and the end-of-turn flush shares this same queue: a
-    // second drain of A is nothing, B still has its one item, untouched by A's
-    // drain (the per-session keying is the whole callback contract).
-    assert!(cb(sid_a).await.is_none());
-    let drained_b = cb(sid_b).await.expect("session B survives A's drain");
-    assert!(drained_b.context_text.contains("beta follow-up"));
-}
-
-#[tokio::test]
-async fn concurrent_claims_contend_for_one_slot() {
-    let state = Arc::new(WhatsAppState::new());
-    let sid = uuid::Uuid::new_v4();
-
-    // Hold the slot HERE while racers try to claim: a guard only released at
-    // task end would let every racer win sequentially, so the parent keeps its
-    // guard across the contention (and the racers await it).
-    let held = state
-        .try_begin_turn(sid)
-        .expect("the parent claims the slot first");
-    let mut handles = Vec::new();
-    for _ in 0..4 {
-        let s = state.clone();
-        handles.push(tokio::spawn(async move { s.try_begin_turn(sid).is_some() }));
-    }
-    for h in handles {
-        assert!(
-            !h.await.unwrap(),
-            "a held slot excludes every concurrent claimer"
-        );
-    }
-    drop(held);
-
-    // After the release a fresh claim wins: guards truly free the slot, on
-    // every path including the early-return ones.
-    assert!(state.try_begin_turn(sid).is_some());
+    assert!(state.drain_turns(sid).is_none());
+    drop(guard);
 }

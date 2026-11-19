@@ -124,32 +124,25 @@ fn status_arm() -> &'static str {
 }
 
 #[test]
-fn status_arm_posts_an_image_through_the_lib() {
-    let arm = status_arm();
+fn the_status_sink_keeps_both_send_paths() {
+    // #2177 moved the lib calls into the sink with the fan-out, so both paths
+    // are asserted against the whole module rather than the dispatch arm.
+    const SRC: &str = include_str!("../brain/tools/whatsapp_send.rs");
     assert!(
-        arm.contains("make_jpeg_thumbnail(&bytes)"),
-        "status arm does not build the JPEG thumbnail an image status requires"
+        SRC.contains(".send_image("),
+        "the image status path disappeared; status_update must still do both"
     );
     assert!(
-        arm.contains("wacore::download::MediaType::Image"),
-        "status arm does not upload the image"
-    );
-    assert!(
-        arm.contains("send_image(upload, thumbnail, text.as_deref(), &jids, opts)"),
-        "status arm does not call the lib's send_image"
-    );
-}
-
-#[test]
-fn status_arm_keeps_the_text_path() {
-    let arm = status_arm();
-    assert!(
-        arm.contains(".send_text("),
+        SRC.contains(".send_text("),
         "the text status path disappeared; status_update must still do both"
     );
     assert!(
-        arm.contains("STATUS_BACKGROUND_ARGB"),
+        SRC.contains("STATUS_BACKGROUND_ARGB"),
         "text status lost its background colour"
+    );
+    assert!(
+        SRC.contains("FontType::SYSTEM"),
+        "text status lost its font"
     );
 }
 

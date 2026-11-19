@@ -60,6 +60,23 @@ fn splits_cleanly(prefix: &str) -> bool {
     depth == 0
 }
 
+/// Discord allows 5 action rows of 5 buttons, so 25 entries is a hard platform
+/// ceiling, not a choice (#2190).
+pub(crate) const MENU_BUTTON_CAP: usize = 25;
+
+/// Body for a menu message, with an explicit notice when the list was cut.
+///
+/// The defect was truncating silently: a user with 30 providers saw 25 and no
+/// hint that five were unreachable from the menu. Returns the body unchanged
+/// when everything fits.
+pub(crate) fn menu_body(text: &str, total: usize) -> String {
+    if total <= MENU_BUTTON_CAP {
+        return text.to_string();
+    }
+    let shown = total.min(MENU_BUTTON_CAP);
+    format!("{text}\n\nShowing 1-{shown} of {total}. The rest are reachable from the TUI.")
+}
+
 pub fn split_message(text: &str, max_len: usize) -> Vec<String> {
     if text.len() <= max_len {
         return vec![text.to_string()];
@@ -165,6 +182,13 @@ pub fn split_message(text: &str, max_len: usize) -> Vec<String> {
 const FLOW_TICKER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(4);
 /// Hard stop for orphaned ticks (crashed turn): no immortal tasks.
 const FLOW_TICKER_CAP: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Compaction typing cadence (#2189). Under Discord's ~10s expiry so the dots
+/// do not flicker, and the same 8s the sustained turn pinger uses.
+const COMPACTION_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(8);
+/// Outer bound on the compaction pinger, about 96s. The turn token ends it
+/// when the turn ends; this only covers a compaction that never reports back.
+const COMPACTION_PING_ROUNDS: usize = 12;
 
 /// Settle a card whose group left the store while the card was still live.
 ///
@@ -885,7 +909,7 @@ pub(crate) async fn handle_message(
     // prior token before starting new work). Channel commands like /models,
     // /help, /usage, /new must NEVER abort an in-flight task: switching models
     // applies to the next run, it does not drop current work (#266).
-    if crate::utils::stop_intent::is_stop_command_or_intent(&msg.content) {
+    if crate::utils::stop_intent::is_stop_command_or_intent(&content) {
         discord_state.cancel_session(session_id).await;
         if let Err(e) = writes::say(
             &ctx.http,
@@ -1002,7 +1026,9 @@ pub(crate) async fn handle_message(
                         )
                     })
                     .collect();
-                let builder = CreateMessage::new().content(&resp.text).components(rows);
+                let builder = CreateMessage::new()
+                    .content(menu_body(&resp.text, resp.providers.len()))
+                    .components(rows);
                 // Never silent (#1019): this IS the reply. A swallowed failure
                 // here is indistinguishable from the agent choosing not to
                 // answer, and the user has no way to tell or report it.
@@ -1131,7 +1157,9 @@ pub(crate) async fn handle_message(
                         )
                     })
                     .collect();
-                let builder = CreateMessage::new().content(&resp.text).components(rows);
+                let builder = CreateMessage::new()
+                    .content(menu_body(&resp.text, resp.sessions.len()))
+                    .components(rows);
                 // Never silent (#1019): this IS the reply. A swallowed failure
                 // here is indistinguishable from the agent choosing not to
                 // answer, and the user has no way to tell or report it.
@@ -1383,6 +1411,10 @@ pub(crate) async fn handle_message(
     // one ENDS the turn. Its own token, not `cancel_token`, which only fires on
     // abort — this must stop when the turn FINISHES, however it finishes.
     let typing_cancel = tokio_util::sync::CancellationToken::new();
+    // #2189: the compaction pinger must die with the turn. This clone is taken
+    // before the guard consumes the token, so the pinger and the turn share
+    // one cancellation and the pinger cannot outlive the work.
+    let turn_typing = typing_cancel.clone();
     super::typing::spawn_typing(
         ctx.http.clone(),
         msg.channel_id,
@@ -1469,12 +1501,24 @@ pub(crate) async fn handle_message(
                 // resume the indicator naturally.
                 ProgressEvent::Compacting { .. } => {
                     let http = http.clone();
+                    // #2189: bound to the turn, not to a fixed 96s window. A
+                    // compaction that finishes in 2s used to leave the client
+                    // showing "is typing" for another 90s, with no event able
+                    // to stop it. The ceiling stays as the outer bound for a
+                    // compaction that never reports back.
+                    let cancel = turn_typing.clone();
                     tokio::spawn(async move {
-                        for _ in 0..12 {
+                        for _ in 0..COMPACTION_PING_ROUNDS {
+                            if cancel.is_cancelled() {
+                                break;
+                            }
                             if let Err(e) = channel.broadcast_typing(&http).await {
                                 tracing::warn!(error = %e, "failed to broadcast Discord typing");
                             }
-                            tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                _ = tokio::time::sleep(COMPACTION_PING_INTERVAL) => {}
+                            }
                         }
                     });
                 }
@@ -1517,6 +1561,7 @@ pub(crate) async fn handle_message(
                 ProgressEvent::ToolStarted {
                     tool_name,
                     tool_input,
+                    ..
                 } => {
                     let ctx_hint = crate::utils::tool_context_hint(&tool_name, &tool_input);
                     let gmid = group_msg_id.clone();

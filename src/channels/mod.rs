@@ -47,7 +47,7 @@ pub const GENERAL_TOPIC_ID: i32 = 1;
 
 mod greeting;
 
-pub use factory::ChannelFactory;
+pub use factory::{ChannelFactory, configure_cron_factory};
 pub use greeting::generate_connection_greeting;
 pub use manager::ChannelManager;
 

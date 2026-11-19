@@ -7,8 +7,9 @@ name: CI
 #     Docs-only commits are skipped via paths-ignore so they don't burn
 #     the matrix; rapid pushes cancel older runs via `concurrency`. The
 #     heavy cross-platform BUILD job is gated off routine main pushes
-#     (see its `if:`) so a normal commit only pays for lint + Linux test
-#     + audit (~5-8 min, cached, cancellable). This replaces the old
+#     (see its `if:`) so a normal commit only pays for lint + the two
+#     test legs (macOS self-hosted, Linux hosted) + audit. This replaces
+#     the old
 #     opt-out `[skip ci]`-on-every-commit toil with sensible defaults.
 #   - workflow_dispatch: run the build matrix on demand (e.g. to verify
 #     macOS before cutting a release tag; Windows is validated by release.yml).
@@ -89,7 +90,7 @@ jobs:
       - name: Install Rust (from rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
           components: rustfmt, clippy
 
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -111,8 +112,25 @@ jobs:
         # block the PR rather than annotate it.
         run: cargo fmt --all -- --check
 
-      - name: Clippy
-        run: cargo clippy --locked --lib --bins --tests --examples --all-features -- -D warnings
+      - name: Byte-slice ratchet self-test
+        # A checker that has silently learned to find nothing is worse than no
+        # checker, so it ships its own teeth (#2221).
+        run: python3 scripts/check-byte-slice-ratchet.py --self-test
+
+      - name: Clippy, with the byte-slice ratchet
+        # One clippy run does both jobs. -D warnings is still the gate for every
+        # other lint; clippy::string_slice is held at warn by --force-warn (a
+        # group -D beats a later -W, measured) so the ratchet can read the site
+        # list instead of dying on the 900 sites this repo already has. Only a
+        # site that is not in scripts/byte-slice-baseline.txt fails the job.
+        #
+        # The touch matters: on a restored cargo cache every unit reports fresh
+        # and clippy emits no diagnostics at all, which would let the ratchet
+        # pass without checking anything. Forcing our own crate to recompile
+        # keeps dependencies cached and keeps the check real.
+        run: |
+          touch src/lib.rs
+          python3 scripts/check-byte-slice-ratchet.py
 
   # ── Stage 2: Build verification (parallel, gated on lint + audit) ────────
   # Cross-platform BUILD on macOS confirms target compatibility without
@@ -127,7 +145,7 @@ jobs:
     # Cross-platform build verification. Runs where it pays off — on PRs
     # (gate contributions) and on-demand (workflow_dispatch, e.g. before a
     # release tag) — but NOT on every routine push to main. Direct main
-    # pushes still get lint + Linux test + audit.
+    # pushes still get lint + both test legs + audit.
     #
     # Windows is intentionally NOT built here (#627): it builds --all-features
     # with rust-cache skipped (always cold), so it chronically hit the 40m cap
@@ -186,7 +204,7 @@ jobs:
       - name: Install Rust (from rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
           targets: ${{ matrix.target }}
 
       # No `save-if` restriction: this job only runs on PRs and
@@ -319,7 +337,7 @@ jobs:
       - name: Install Rust (from rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
           components: rustfmt, clippy
 
       # No `save-if` restriction: this job only runs on PRs and
@@ -330,8 +348,12 @@ jobs:
         with:
           cache-on-failure: true
 
+      # Pinned to a released tag and an explicit tool version: the action
+      # defaults cmakeVersion to "latest" and resolves it at run time.
       - name: Install CMake (Windows)
-        uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # latest
+        uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # v4.4.4
+        with:
+          cmakeVersion: "4.4.4"
 
       - name: Install NASM (Windows)
         uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
@@ -627,10 +649,6 @@ jobs:
   # (rate_limiter pacing) rely on cargo test's threadpool semantics
   # and fail under nextest's process-per-test isolation. nextest
   # migration is a follow-up once those tests are made portable.
-  # Runs on the Mac only. Linux is covered where it costs nothing: the
-  # release matrix builds both Linux targets at tag time, and the suite runs
-  # locally on demand. Paying for a hosted Linux run on every push buys very
-  # little, since almost the entire suite is platform independent.
   test:
     name: Test
     needs: [lint, audit]
@@ -677,7 +695,7 @@ jobs:
       - name: Install Rust (from rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
 
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -704,8 +722,8 @@ jobs:
   # cargo-audit only scans Cargo.lock; it needs no compile, so it runs in
   # PARALLEL with lint as a second fast gate rather than after it. build/test/
   # coverage all `needs: [lint, audit]`, so a fresh advisory (this fails in
-  # ~4s) skips the ~22-min Linux test and the cross-platform build matrix
-  # instead of racing them. Lockfile-only fix → no recompile to re-gate.
+  # ~4s) skips both test legs and the cross-platform build matrix instead of
+  # racing them. Lockfile-only fix → no recompile to re-gate.
 
   audit:
     name: Cargo Audit
@@ -746,7 +764,7 @@ jobs:
       - name: Install Rust (from rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
@@ -891,7 +909,7 @@ jobs:
       - name: Install Rust (from rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
 
       - name: Install ALSA dev
         if: runner.os == 'Linux'

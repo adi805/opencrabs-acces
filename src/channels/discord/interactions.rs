@@ -542,6 +542,7 @@ pub(crate) async fn route_followup_turn(
                 ProgressEvent::ToolStarted {
                     tool_name,
                     tool_input,
+                    ..
                 } => {
                     let ctx_hint = crate::utils::tool_context_hint(&tool_name, &tool_input);
                     let gmid = group_msg_id.clone();

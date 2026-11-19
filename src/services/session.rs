@@ -82,6 +82,30 @@ impl SessionService {
         working_directory: Option<String>,
         chat_key: &str,
     ) -> Result<Session> {
+        self.insert_or_resolve_channel_session_reported(
+            title,
+            provider_name,
+            model,
+            working_directory,
+            chat_key,
+        )
+        .await
+        .map(|(session, _)| session)
+    }
+
+    /// Same as [`Self::insert_or_resolve_channel_session`], also reporting
+    /// whether this call created the row (#2183). A caller that logs
+    /// "created new channel session" needs to know which it was: the insert
+    /// resolves an existing row for the same chat key, so the word "created"
+    /// was printed on every message of a long-lived chat.
+    pub async fn insert_or_resolve_channel_session_reported(
+        &self,
+        title: Option<String>,
+        provider_name: Option<String>,
+        model: Option<String>,
+        working_directory: Option<String>,
+        chat_key: &str,
+    ) -> Result<(Session, bool)> {
         let repo = SessionRepository::new(self.context.pool());
 
         let session = Session {
@@ -108,13 +132,21 @@ impl SessionService {
             sharing: None,
         };
 
-        let result = repo
-            .insert_or_resolve_channel(&session, chat_key)
+        let (result, created) = repo
+            .insert_or_resolve_channel_reported(&session, chat_key)
             .await
             .context("Failed to create channel session")?;
 
-        tracing::info!("Created/resolved channel session: {}", result.id);
-        Ok(result)
+        tracing::info!(
+            "{} channel session: {}",
+            if created {
+                "Created new"
+            } else {
+                "Resolved existing"
+            },
+            result.id
+        );
+        Ok((result, created))
     }
 
     /// Get a session by ID
@@ -183,6 +215,7 @@ impl SessionService {
     /// same turn. It rides along to the ledger so the By Model card can show
     /// the cache share of a model's tokens (#2027); `None` means the turn
     /// reported no cache usage, which is a different fact from a zero.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_session_usage(
         &self,
         id: Uuid,
@@ -191,14 +224,16 @@ impl SessionService {
         provider: &str,
         model: &str,
         cache_read_tokens: Option<i64>,
+        prompt_tokens: Option<i64>,
     ) -> Result<()> {
-        let mut session = self.get_session_required(id).await?;
-        session.token_count += token_count;
-        session.total_cost += cost;
-        session.updated_at = Utc::now();
-
+        // Atomic increment, not read-modify-write (#2180). The old shape loaded
+        // the row, added in Rust and wrote the whole row back, so two turns
+        // finishing on the same session at the same time lost one increment
+        // with no error. Overlapping inbound turns are exactly when that
+        // happens, which is why the loss went unnoticed for so long: the
+        // counter just came out lower than the ledger said.
         let repo = SessionRepository::new(self.context.pool());
-        repo.update(&session)
+        repo.update_stats(id, token_count, cost)
             .await
             .context("Failed to update session usage")?;
 
@@ -212,6 +247,7 @@ impl SessionService {
                 token_count,
                 cost,
                 cache_read_tokens,
+                prompt_tokens,
             )
             .await
         {
@@ -389,9 +425,25 @@ impl SessionService {
     /// (e.g. `[chat:12345]`) as the title suffix on creation so a
     /// rename of the user-visible label still resolves to the same
     /// session row.
+    /// The live session carrying this stable `[chat:<id>]` key (#2183). The
+    /// key is the unique identity, so this is a direct lookup; the title
+    /// suffix is only a proxy for it and misses an auto-renamed row.
+    pub async fn find_session_by_channel_chat_key(&self, key: &str) -> Result<Option<Session>> {
+        let repo = SessionRepository::new(self.context.pool());
+        repo.find_by_channel_chat_key(key).await
+    }
+
     pub async fn find_session_by_title_suffix(&self, suffix: &str) -> Result<Option<Session>> {
         let repo = SessionRepository::new(self.context.pool());
         repo.find_by_title_suffix(suffix).await
+    }
+
+    /// Give up a session's claim on its chat key without archiving it (#2186).
+    pub async fn release_channel_chat_key(&self, id: Uuid) -> Result<()> {
+        let repo = SessionRepository::new(self.context.pool());
+        repo.release_channel_chat_key(id)
+            .await
+            .context("Failed to release session chat key")
     }
 
     /// Get the most recent active session

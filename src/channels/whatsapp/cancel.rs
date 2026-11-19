@@ -8,16 +8,13 @@ use super::WhatsAppState;
 impl WhatsAppState {
     /// Store a cancel token for a session (before starting agent call).
     ///
-    /// Overwrites any prior token WITHOUT cancelling it (#652's rule, the
-    /// WhatsApp twin, ported by #299). The cancel that used to live here
-    /// predates the atomic `try_begin_turn` gate (`turns.rs`), which is now
-    /// the single source of truth for one-turn-per-session, so all it could
-    /// still reach was the token a COMPLETED turn left behind: a finished turn
-    /// never cancels its own token, `remove_cancel_token` keeps non-cancelled
-    /// ones on purpose, and so every new turn logged "cancelling previous
-    /// in-flight agent call" for a turn that had ended minutes earlier while
-    /// killing nothing. A genuine cancellation goes through `cancel_session`
-    /// (/stop), never here.
+    /// Overwrites any prior token WITHOUT cancelling it (#2179, #652's
+    /// WhatsApp twin). A turn is already running for this session when a
+    /// second message arrives, and `try_begin_turn` queues that message for
+    /// the live turn instead of starting a second one, so the cancel here was
+    /// redundant and harmful: it hard-killed the user's genuinely in-flight
+    /// turn, dropping the running request and the answer with it. Genuine
+    /// cancellation stays in `cancel_session` (`/stop`, a provider swap).
     pub async fn store_cancel_token(&self, session_id: Uuid, token: CancellationToken) {
         self.cancel_tokens.lock().await.insert(session_id, token);
     }

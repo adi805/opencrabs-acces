@@ -41,11 +41,6 @@ use std::path::{Path, PathBuf};
 const HELD_BACK_CHANNEL_MODULES: &[&str] = &[
     "src/channels/discord/options_host.rs",
     "src/channels/discord/tracked_turn.rs",
-    "src/channels/slack/flow_progress.rs",
-    "src/channels/slack/options_host.rs",
-    "src/channels/slack/resume_turn.rs",
-    "src/channels/whatsapp/flow_message.rs",
-    "src/channels/whatsapp/flow_render.rs",
 ];
 
 /// Test modules the sync left undeclared and `#264` deliberately did not wire.
@@ -71,21 +66,7 @@ const HELD_BACK_CHANNEL_MODULES: &[&str] = &[
 /// `discord_turn_slot_test` left on 2026-10-18 with #296: the turn slot and the
 /// follow-up queue it exercises are compiled now, so the module asserts the
 /// real `DiscordState` instead of a file nobody built.
-const DEFERRED_TEST_MODULES: &[&str] = &[
-    "src/tests/discord_cowork_gate_test.rs",
-    "src/tests/discord_dm_channel_history_test.rs",
-    "src/tests/discord_flow_outcome_test.rs",
-    "src/tests/discord_options_host_test.rs",
-    "src/tests/discord_plan_board_test.rs",
-    "src/tests/discord_resume_turn_tracking_test.rs",
-    "src/tests/generate_image_multi_input_test.rs",
-    "src/tests/onboarding_welcome_send_test.rs",
-    "src/tests/slack_options_host_test.rs",
-    "src/tests/slack_resume_turn_test.rs",
-    "src/tests/whatsapp_composing_parity_test.rs",
-    "src/tests/whatsapp_flow_options_test.rs",
-    "src/tests/whatsapp_flow_render_test.rs",
-];
+const DEFERRED_TEST_MODULES: &[&str] = &[];
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

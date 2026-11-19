@@ -39,7 +39,7 @@ pub(crate) fn bounded_output_tokens(configured_max: u32, context_window: u32) ->
 /// 40 000 tokens while the reserve was a hard-coded 9 000 (4.44x), and 208 of
 /// 210 live markers exceeded this budget (mean 27.8 KB, max 69.2 KB).
 /// See opencrabs/opencrabs#1930.
-pub const COMPACTION_SUMMARY_MAX_TOKENS: u32 = 3_000;
+pub(crate) const COMPACTION_SUMMARY_MAX_TOKENS: u32 = 3_000;
 
 /// Reasoning tokens the summariser may burn INSIDE its output allowance.
 ///

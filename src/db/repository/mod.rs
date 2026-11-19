@@ -12,6 +12,7 @@ pub mod cron_job_run;
 pub mod decision_cache;
 pub mod decision_stats;
 pub mod discord_card;
+pub mod discord_tool_card;
 pub mod feedback_ledger;
 pub mod file;
 pub mod message;

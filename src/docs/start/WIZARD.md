@@ -19,8 +19,8 @@ opencrabs onboard
 ```
 
 <Info>
-Fastest first chat: open the Control UI (no channel setup needed). Run
-`opencrabs dashboard` and chat in the browser. Docs: [Dashboard](/web/dashboard).
+Fastest first chat: no channel setup needed. Run `opencrabs chat` for the
+terminal UI, or `opencrabs onboard` to configure a channel.
 </Info>
 
 To reconfigure later:
@@ -108,7 +108,6 @@ RPC API, and a full list of config fields the wizard writes, see the
 
 ## Related docs
 
-- CLI command reference: [`opencrabs onboard`](/cli/onboard)
-- Onboarding overview: [Onboarding Overview](/start/onboarding-overview)
-- macOS app onboarding: [Onboarding](/start/onboarding)
-- Agent first-run ritual: [Agent Bootstrapping](/start/bootstrapping)
+- Terminal wizard: run `opencrabs onboard`
+- Chat: run `opencrabs chat`
+- ACP connect: [ACP connect](/acp-connect)

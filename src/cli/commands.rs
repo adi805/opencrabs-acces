@@ -930,9 +930,13 @@ pub(crate) async fn cmd_acp(config: &crate::config::Config, model: Option<String
 
     let provider = crate::brain::provider::create_provider(config).await?;
 
+    // ACP is a LIVE user surface (the phone app, Zed): interactive registry
+    // so `suggest_options` exists and its chips render client-side. See
+    // `register_acp_agent_tools` for the full ruling, including why
+    // `session_notify` is dropped.
     let tool_registry = Arc::new(ToolRegistry::new());
     let subagent_manager =
-        crate::cli::tool_setup::register_core_agent_tools(&tool_registry, &db, config, true);
+        crate::cli::tool_setup::register_acp_agent_tools(&tool_registry, &db, config);
 
     let brain_path = BrainLoader::resolve_path();
     let brain_loader = BrainLoader::new(brain_path.clone());
@@ -945,7 +949,10 @@ pub(crate) async fn cmd_acp(config: &crate::config::Config, model: Option<String
     };
     let mut system_brain = brain_loader.build_system_brain(Some(&runtime_info));
     if config.agent.lazy_tools {
-        system_brain.push_str(&crate::brain::tools::catalog::tool_access_prompt(true));
+        // Interactive roster (headless = false) to match the registry above —
+        // the headless roster omits `suggest_options` and would un-advertise
+        // a tool this surface just registered.
+        system_brain.push_str(&crate::brain::tools::catalog::tool_access_prompt(false));
     }
 
     crate::cli::tool_setup::register_runtime_tools(&tool_registry, config);
@@ -970,6 +977,11 @@ pub(crate) async fn cmd_acp(config: &crate::config::Config, model: Option<String
         .await
         .with_tool_registry(tool_registry.clone())
         .with_system_brain(system_brain)
+        // Explicit (not the default): a future default flip to headless must
+        // not silently strip the FOLLOW-UP SUGGESTIONS paragraph or hard-error
+        // suggest_options on this interactive surface. Mirrors cmd_run's
+        // explicit `.with_headless(true)`.
+        .with_headless(false)
         .with_subagent_manager(subagent_manager)
         .with_message_queue_callback(Some(queue_callback));
 
@@ -1902,14 +1914,23 @@ pub(crate) async fn cmd_session(
             match session_svc.get_session(uuid).await? {
                 Some(s) => {
                     println!("🦀 Session {}\n", s.id);
-                    println!("  Title:    {}", s.title.as_deref().unwrap_or("untitled"));
-                    println!("  Provider: {}", s.provider_name.as_deref().unwrap_or("-"));
-                    println!("  Model:    {}", s.model.as_deref().unwrap_or("-"));
-                    println!("  Tokens:   {}", s.token_count);
-                    println!("  Cost:     ${:.6}", s.total_cost);
-                    println!("  Archived: {}", s.archived_at.is_some());
-                    println!("  Created:  {}", s.created_at);
-                    println!("  Updated:  {}", s.updated_at);
+                    // Labels padded to the longest one so the values line up;
+                    // the token figure is a lifetime accumulator, not the size
+                    // of the context window, so it says so (#2180).
+                    println!(
+                        "  Title:           {}",
+                        s.title.as_deref().unwrap_or("untitled")
+                    );
+                    println!(
+                        "  Provider:        {}",
+                        s.provider_name.as_deref().unwrap_or("-")
+                    );
+                    println!("  Model:           {}", s.model.as_deref().unwrap_or("-"));
+                    println!("  Lifetime tokens: {}", s.token_count);
+                    println!("  Cost:            ${:.6}", s.total_cost);
+                    println!("  Archived:        {}", s.archived_at.is_some());
+                    println!("  Created:         {}", s.created_at);
+                    println!("  Updated:         {}", s.updated_at);
                     println!();
                 }
                 None => println!("Session not found: {id}"),

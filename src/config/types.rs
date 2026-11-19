@@ -2102,6 +2102,23 @@ pub struct AgentConfig {
     #[serde(default = "default_skill_glob_gate")]
     pub skill_glob_gate: bool,
 
+    /// Mechanical plan requirement. **On by default, 12 calls.**
+    ///
+    /// After this many tool calls in a single turn with no plan for the
+    /// session, every further call is refused until the agent calls `plan`
+    /// init. Prose in the brain files was the only thing asking for a plan
+    /// before, and it was routinely skipped on research, audits and multi-file
+    /// fixes; the gate makes the requirement mechanical instead of advisory.
+    ///
+    /// `plan` and `tool_search` always pass, so the agent can always reach the
+    /// tool that unblocks it. Sub-agent sessions and cron runs are exempt: they
+    /// execute a task someone else already planned, and a throwaway child plan
+    /// nobody sees would be worse than no plan.
+    ///
+    /// Set 0 to disable the gate entirely.
+    #[serde(default = "default_plan_gate_after_tool_calls")]
+    pub plan_gate_after_tool_calls: usize,
+
     /// Lazy tool-schema loading. **On by default.** A request ships only the
     /// CORE tool schemas (~4k tokens) plus `tool_search`, instead of all ~95
     /// (~20k counted in every request's input); the agent calls `tool_search`
@@ -2246,6 +2263,13 @@ fn default_skill_glob_gate() -> bool {
     true
 }
 
+/// Twelve calls is roughly where a turn stops being one step. Below it a
+/// read-edit-verify cycle is still a single action; above it the turn is
+/// doing multi-step work that belongs in a checklist.
+fn default_plan_gate_after_tool_calls() -> usize {
+    12
+}
+
 fn default_lazy_tools() -> bool {
     true
 }
@@ -2356,6 +2380,7 @@ impl Default for AgentConfig {
             compaction_notice: false,
             background_compaction: default_background_compaction(),
             skill_glob_gate: default_skill_glob_gate(),
+            plan_gate_after_tool_calls: default_plan_gate_after_tool_calls(),
             lazy_tools: default_lazy_tools(),
             redact_sensitive_data: default_redact_sensitive_data(),
             redact_group: None,
@@ -3483,6 +3508,19 @@ pub struct ProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vision_model: Option<String>,
 
+    /// Output token cap for `analyze_image` / `analyze_video` calls on this
+    /// provider (#2120).
+    ///
+    /// Unset is the default and the right answer for almost everyone: the
+    /// request then carries no `max_tokens`, so the endpoint applies its own
+    /// default. A reasoning vision model spends part of that budget on
+    /// reasoning tokens, and a hard-coded cap used to truncate the answer or
+    /// leave `content` empty, which surfaced as "No text response from vision
+    /// model". Set this only to pin a specific figure (an endpoint with a low
+    /// default, or a cost ceiling).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vision_max_tokens: Option<u32>,
+
     /// Image-generation model override for this provider.
     ///
     /// Wins over the global `image.generation.model` when the active
@@ -3495,22 +3533,25 @@ pub struct ProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation_model: Option<String>,
 
-    /// Speech-to-text model for this provider. Set it and voice notes
-    /// transcribe through the active provider, the same way `vision_model`
-    /// drives image understanding and `generation_model` drives image
-    /// creation.
+    /// Speech-to-text model for the active provider. Set it and voice notes
+    /// transcribe through that provider, the same way `vision_model` drives
+    /// image understanding and `generation_model` drives image creation. The
+    /// endpoint is the provider's own (`base_url`, or its known default), so
+    /// any [OI]-compatible provider can serve transcription.
     ///
-    /// The request shape follows the provider: an [OI]-compatible engine
-    /// (Groq, LocalAI, Ollama, an [OI] gateway) answers
-    /// `POST /v1/audio/transcriptions` with a multipart body, while the
-    /// built-in provider serves transcription on the CHAT route as an
-    /// `input_audio` part and answers 404 on every `/v1/audio/*` path. The
-    /// route is chosen from the base URL, so both work off this one key.
+    /// The wire depends on the endpoint. The built-in endpoint takes the audio
+    /// as an `input_audio` part on `/v1/chat/completions` and serves no
+    /// `/v1/audio/transcriptions` route at all; every other provider gets the
+    /// multipart transcription request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stt_model: Option<String>,
 
     /// Text-to-speech model for this provider's [OI]-compatible
     /// `/v1/audio/speech` route. See `stt_model`.
+    ///
+    /// The built-in endpoint serves no speech route in any shape, so setting
+    /// this on it has no effect: synthesis falls through to the built-in local
+    /// voice, a `[providers.tts.*]` block, or Voicebox.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tts_model: Option<String>,
 

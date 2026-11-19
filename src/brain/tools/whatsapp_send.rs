@@ -1200,6 +1200,14 @@ impl Tool for WhatsAppSendTool {
                     "type": "integer",
                     "description": "For status_update with a video file: the clip length in seconds. Omit to probe it with ffprobe; falls back to 0 when the probe fails."
                 },
+                "newsletter": {
+                    "type": "string",
+                    "description": "For post_newsletter: the newsletter (channel) JID to post to, e.g. '120363...@newsletter' as returned by list_newsletters or create_newsletter. It must appear in channels.whatsapp.broadcast.allowed_targets or NOTHING is sent."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "For create_newsletter: the channel description. Optional."
+                },
                 "label_id": {
                     "type": "string",
                     "description": "For create_label (omit to make a new label; supplying an existing id renames/recolors it), assign_label (required), and delete_label (required)"
@@ -1887,6 +1895,8 @@ impl Tool for WhatsAppSendTool {
                     .await
                 );
                 let msg_id = pget!(get_str(&input, "message_id")).to_string();
+
+                gate_send!(self, jid_str, "the message deletion");
 
                 match client
                     .revoke_message(jid, msg_id.clone(), Default::default())

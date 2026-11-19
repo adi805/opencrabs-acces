@@ -105,6 +105,17 @@ fn empty_or_missing_actions_array_is_rejected() {
 }
 
 #[test]
+fn the_unknown_type_error_lists_upload() {
+    // The rejection message is how a model learns the vocabulary; leaving
+    // upload out of it hides the action from every caller that guessed wrong.
+    let err = parse_actions(&actions(json!([{"type": "attach", "selector": "#x"}]))).unwrap_err();
+    assert!(
+        err.contains("click/fill/press/select/wait/upload"),
+        "got: {err}"
+    );
+}
+
+#[test]
 fn prefix_report_names_completed_prefix_and_holds_remaining() {
     let failed = Act::Click {
         selector: "#gone".into(),
