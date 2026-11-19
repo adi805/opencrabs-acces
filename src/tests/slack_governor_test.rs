@@ -430,11 +430,12 @@ fn slack_chat_writes_only_leave_through_the_governor() {
         34,
         "every new-message site pays the budget: the count is the coverage"
     );
+    // 8, not upstream's 7: the fork's approval-timeout edit is its own site.
     assert_eq!(
         count("session.update("),
-        7,
+        8,
         "content edits (settle stamps, flipped waiting lines, approval \
-         labels, the user's toggle) stay content: 7 of them"
+         labels, the timeout denial, the user's toggle) stay content: 8 of them"
     );
     assert_eq!(
         count("session.update_chrome("),
