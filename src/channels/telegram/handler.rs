@@ -2279,16 +2279,7 @@ pub(crate) async fn handle_message(
             false
         };
 
-        let media_note =
-            reply_media.map(|kind| media_reference_note(kind, reply_attachment.as_deref()));
-        let ctx = compose_reply_context(
-            resolve_reply_context_pruned(
-                &reply_sender,
-                &full_clean,
-                &quote_clean,
-                unrecoverable_reply,
-                full_in_context,
-            ),
+        let ctx = resolve_reply_context_pruned(
             &reply_sender,
             &full_clean,
             &quote_clean,
@@ -3529,6 +3520,7 @@ pub(crate) fn attachment_path_in(content: &str) -> Option<&str> {
 /// explicit unresolved line. A caption with no media reference is exactly the
 /// state that let the agent answer about the wrong artifact (#2121), so the
 /// unresolved case says so instead of degrading back to the caption.
+#[allow(dead_code)]
 pub(crate) fn media_reference_note(kind: &str, path: Option<&str>) -> String {
     match path {
         Some(p) if kind == "photo" => format!("media: photo, image: <<IMG:{p}>>"),
@@ -3547,6 +3539,7 @@ pub(crate) fn media_reference_note(kind: &str, path: Option<&str>) -> String {
 /// tell which artifact was meant. When there is no other context the note
 /// stands alone rather than being dropped, which is the captionless-media case
 /// that used to resolve to nothing at all.
+#[allow(dead_code)]
 pub(crate) fn compose_reply_context(
     ctx: Option<String>,
     sender: &str,

@@ -1103,7 +1103,6 @@ pub(crate) fn format_help() -> String {
         (
             "/stop",
             "Abort current operation (`/stop --session <id>` for another session)",
-            "Abort current operation (`/stop <id>` targets another session)",
         ),
         (
             "/architecture",

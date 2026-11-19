@@ -6,7 +6,6 @@
 //! thread, the same shape a typed message gets.
 
 use super::SlackState;
-use super::governor::GatedWrites;
 use crate::brain::agent::service::MessageEnqueueCallback;
 use crate::channels::bg_resume::{self, AgentHolder};
 use std::sync::Arc;

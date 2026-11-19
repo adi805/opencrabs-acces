@@ -66,7 +66,6 @@ pub use shared_sessions::{
     mark_session_personal_durable, mark_session_shared, mark_session_shared_durable,
     restore_sharing, session_sharing,
 };
-pub use shared_sessions::{is_personal_brain_file, is_session_shared, mark_session_shared};
 pub use store::get_store;
 pub use types::MemoryResult;
 pub(crate) use types::{COLLECTION_BRAIN, COLLECTION_EXTERNAL, COLLECTION_MEMORY};

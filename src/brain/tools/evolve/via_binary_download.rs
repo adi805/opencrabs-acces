@@ -762,9 +762,6 @@ impl EvolveTool {
                         }
                     }
                 }
-                None => {
-                    restart_status = RestartStatus::NoUnitsMatched;
-                }
             }
         }
 

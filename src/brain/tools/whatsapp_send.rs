@@ -1243,7 +1243,7 @@ pub(crate) fn newsletter_jid(raw: &str) -> std::result::Result<Jid, String> {
     let jid: Jid = raw
         .parse()
         .map_err(|e| format!("'{raw}' is not a valid JID: {e:?}"))?;
-    if !jid.is_newsletter() {
+    if !jid.to_string().ends_with("@newsletter") {
         return Err(format!(
             "'{raw}' is not a newsletter JID; expected the '...@newsletter' form that \
              list_newsletters and create_newsletter return. Nothing was sent."
@@ -3805,12 +3805,6 @@ state_user_status_mute.",
                             .map(|r| format!("text status (id {})", r.message_id))
                             .map_err(|e| e.to_string())
                     }
-                    None => (
-                        StatusPayload::Text {
-                            body: text.unwrap_or_default(),
-                        },
-                        "text status".to_string(),
-                    ),
                 };
                 match posted {
                     Ok(kind) => Ok(ToolResult::success(format!(

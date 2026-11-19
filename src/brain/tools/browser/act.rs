@@ -216,6 +216,41 @@ fn req_upload_paths(a: &Value, i: usize) -> std::result::Result<Vec<String>, Str
     Ok(paths)
 }
 
+/// Resolve every upload path in place, before the first CDP call.
+///
+/// `DOM.setFileInputFiles` will happily attach any path the browser process
+/// can read, including a key file, so the batch is refused up front when a
+/// path is missing or is not a regular file. Canonicalising here also means
+/// the path echoed back in the result (and in the approval preview) is the
+/// one the browser actually used, not a `..`-laden alias of it.
+///
+/// Errors are prefixed like every other parse failure: the operator sees
+/// which action was refused, and `NOTHING executed` stays true because this
+/// runs before frame resolution and pre-flight.
+pub(crate) fn resolve_upload_paths(acts: &mut [Act]) -> std::result::Result<(), String> {
+    for (i, act) in acts.iter_mut().enumerate() {
+        let Act::Upload { files, .. } = act else {
+            continue;
+        };
+        for path in files.iter_mut() {
+            let resolved = std::fs::canonicalize(&*path).map_err(|e| {
+                format!(
+                    "action {}: upload file \"{path}\" is not readable ({e}). NOTHING executed.",
+                    i + 1
+                )
+            })?;
+            if !resolved.is_file() {
+                return Err(format!(
+                    "action {}: upload path \"{path}\" is not a regular file. NOTHING executed.",
+                    i + 1
+                ));
+            }
+            *path = resolved.to_string_lossy().into_owned();
+        }
+    }
+    Ok(())
+}
+
 /// Completed-prefix failure report: "actions 1-2 OK; action 3 failed: …".
 /// Pure — pinned by tests.
 pub(crate) fn format_prefix_report(done: usize, failed: &Act, reason: &str) -> String {

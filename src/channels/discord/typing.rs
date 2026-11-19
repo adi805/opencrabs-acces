@@ -65,7 +65,9 @@ pub(crate) fn spawn_typing(
             background,
             agents,
             session_id,
+            None,
             TICK,
+            crate::channels::typing_tick::DEFAULT_TICK_CEILING,
             || broadcast(&http, channel, "handover"),
         )
         .await;
