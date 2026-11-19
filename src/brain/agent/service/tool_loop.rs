@@ -8444,7 +8444,14 @@ impl AgentService {
                         cost,
                         &self.provider_name_for_session(session_id),
                         &self.provider_model_for_session(session_id),
-                        Some(total_cache_read as i64),
+                        // Only when some iteration's provider reported the
+                        // field, so an unreported zero does not read as a
+                        // cache miss in the By Model share (#2139).
+                        if cache_read_reported {
+                            Some(total_cache_read as i64)
+                        } else {
+                            None
+                        },
                         Some(billable_input as i64),
                     )
                     .await
