@@ -1132,7 +1132,6 @@ pub mod telegram_split_message_test;
 pub mod telegram_state_test;
 pub mod telegram_status_message_test;
 #[cfg(feature = "telegram")]
-pub mod telegram_stop_target_test;
 pub mod telegram_stream_loop_resume_test;
 #[cfg(feature = "telegram")]
 pub mod telegram_suggest_merge_test;

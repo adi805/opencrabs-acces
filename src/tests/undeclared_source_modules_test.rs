@@ -66,12 +66,7 @@ const HELD_BACK_CHANNEL_MODULES: &[&str] = &[
 /// `discord_turn_slot_test` left on 2026-10-18 with #296: the turn slot and the
 /// follow-up queue it exercises are compiled now, so the module asserts the
 /// real `DiscordState` instead of a file nobody built.
-const DEFERRED_TEST_MODULES: &[&str] = &[
-    "src/tests/discord_cowork_gate_test.rs",
-    "src/tests/discord_flow_outcome_test.rs",
-    "src/tests/discord_options_host_test.rs",
-    "src/tests/discord_resume_turn_tracking_test.rs",
-];
+const DEFERRED_TEST_MODULES: &[&str] = &[];
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

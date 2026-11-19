@@ -1461,14 +1461,6 @@ pub(crate) fn link_file_markers(
             // Not from a scan: nothing to cut.
             continue;
         };
-        let (start, end) = (span.start, span.end);
-        let Some(marker) = text.get(start..end) else {
-            continue;
-        };
-        if scan.text.get(start..end) != Some(marker) {
-            // The text moved under the span: the marker stays plain.
-            continue;
-        }
         // The span indexes `scan.text`, the scanner's own output, so it still
         // names the marker the scanner wrote there. Read the marker FROM it
         // rather than from `text`, whose bytes have since moved.
@@ -1484,7 +1476,6 @@ pub(crate) fn link_file_markers(
         else {
             continue;
         };
-        spans.push((start, end, marker, link.as_str()));
         spans.push((start, start + marker.len(), marker, link.as_str()));
     }
     if spans.is_empty() {

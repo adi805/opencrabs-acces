@@ -59,8 +59,12 @@ fn stop_token_is_born_before_the_task_that_watches_it() {
         "order must be create -> typing task takes its clone -> register: \
          created {created}, watched {watched}, stored {stored}"
     );
+    // Scope the count to the turn being set up here: the region before the
+    // registration. The fork also has a flushed-turn path further down that
+    // legitimately starts its OWN turn (and therefore its own token), so a
+    // file-wide count would flag that separate turn as a duplicate.
     assert_eq!(
-        HANDLER
+        HANDLER[..stored]
             .matches("let cancel_token = CancellationToken::new();")
             .count(),
         1,

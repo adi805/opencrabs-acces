@@ -421,9 +421,13 @@ fn slack_chat_writes_only_leave_through_the_governor() {
     }
 
     let count = |needle: &str| handler.matches(needle).count() + flow.matches(needle).count();
+    // 34, not upstream's 32: the fork carries two extra sends in handler.rs
+    // (its own follow-up surfaces). Every site goes through `GatedWrites`,
+    // which is implemented for `SlackClientSession`, so the count is a
+    // tripwire for a NEW site rather than a gate check.
     assert_eq!(
         count("session.post("),
-        32,
+        34,
         "every new-message site pays the budget: the count is the coverage"
     );
     assert_eq!(

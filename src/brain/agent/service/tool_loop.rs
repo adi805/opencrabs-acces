@@ -8287,7 +8287,10 @@ impl AgentService {
         // session does not accumulate toward the abort, while consecutive
         // tripping turns still do.
         {
-            let mut rings = self.session_outgoing_text_ring.write().unwrap();
+            let mut rings = self
+                .session_outgoing_text_ring
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
             rings.entry(session_id).or_default().end_turn();
         }
 

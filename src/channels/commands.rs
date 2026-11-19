@@ -697,29 +697,6 @@ pub async fn handle_command(
                 }
             }
         }
-        cmd if cmd.starts_with("/stop ") || cmd.starts_with("/stop:") => {
-            // #2108: target another session's running turn. Owner-only for the
-            // same reason plain /stop is: cancelling someone else's work is a
-            // destructive action on state the sender cannot see.
-            if !is_owner {
-                ChannelCommand::UnknownCommand("🔒 Owner-only command.".to_string())
-            } else {
-                let target = cmd
-                    .strip_prefix("/stop:")
-                    .or_else(|| cmd.strip_prefix("/stop "))
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                if target.is_empty() {
-                    ChannelCommand::UnknownCommand(
-                        "`/stop <session-id>` needs a target. Run `/sessions` for the ids."
-                            .to_string(),
-                    )
-                } else {
-                    ChannelCommand::StopTarget(target)
-                }
-            }
-        }
         cmd if cmd == "/usage" || cmd.starts_with("/usage ") => {
             if !is_owner {
                 ChannelCommand::UnknownCommand("🔒 Owner-only command.".to_string())

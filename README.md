@@ -2122,16 +2122,16 @@ Grab a pre-built binary from [GitHub Releases](https://github.com/adi805/opencra
 
 ```bash
 # macOS (Apple Silicon) — downloads latest, installs to /usr/local/bin
-curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs rtk && sudo mkdir -p /usr/local/bin && sudo mv opencrabs rtk /usr/local/bin/ && command -v opencrabs
 
 # macOS (Intel)
-curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs rtk && sudo mkdir -p /usr/local/bin && sudo mv opencrabs rtk /usr/local/bin/ && command -v opencrabs
 
 # Linux (x86_64)
-curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs rtk && sudo mkdir -p /usr/local/bin && sudo mv opencrabs rtk /usr/local/bin/ && command -v opencrabs
 
 # Linux (ARM64)
-curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs rtk && sudo mkdir -p /usr/local/bin && sudo mv opencrabs rtk /usr/local/bin/ && command -v opencrabs
 ```
 
 The macOS archive ships `OpenCrabs.app`, not a loose binary: macOS reads an app icon only from a bundle, so a bare Mach-O always shows the generic exec glyph. Copying the bundle to `/Applications` gives you the Dock icon and a Launchpad entry, and the symlink keeps `opencrabs` on your PATH. The Linux archive carries `opencrabs.desktop` and `opencrabs.png` for the same reason, so your application menu has an entry with the real icon instead of a nameless terminal.

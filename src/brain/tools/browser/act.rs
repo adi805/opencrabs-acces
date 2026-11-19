@@ -116,7 +116,7 @@ pub(crate) fn parse_actions(input: &Value) -> std::result::Result<Vec<Act>, Stri
             },
             "upload" => Act::Upload {
                 selector: req_str(a, "selector", i, "upload")?,
-                files: req_upload_paths(a, i)?,
+                files: req_files(a, i)?,
             },
             "wait" => {
                 let ms = a["ms"].as_u64().unwrap_or(0);
@@ -157,63 +157,47 @@ fn req_str(a: &Value, field: &str, i: usize, kind: &str) -> std::result::Result<
     }
 }
 
-/// Validate an `upload` action's `files` array (#2112).
+/// `files` for an `upload` action: a non-empty array of absolute paths.
 ///
-/// Every path is checked BEFORE any CDP call, so a bad batch has zero side
-/// effects. `DOM.setFileInputFiles` accepts anything the browser process can
-/// read, so a prompt-injected page asking for `~/.ssh/id_rsa` must be refused
-/// here rather than silently attached: the path must be absolute, exist, and
-/// be a regular file.
-fn req_upload_paths(a: &Value, i: usize) -> std::result::Result<Vec<String>, String> {
+/// Absolute-only is a security boundary, not a convenience: a relative path
+/// resolves against the BROWSER PROCESS's cwd, so the same action would
+/// attach different files depending on where the browser was launched, and
+/// a page that injected the call could pick the target with a `../` walk.
+///
+/// Existence and regular-file checks live in [`resolve_upload_paths`], which
+/// runs after parsing and before the first CDP call, so a bad batch still has
+/// zero side effects while the parse stays a pure function of the JSON.
+fn req_files(a: &Value, i: usize) -> std::result::Result<Vec<String>, String> {
     let raw = match a["files"].as_array() {
         Some(f) if !f.is_empty() => f,
-        Some(_) => {
+        _ => {
             return Err(format!(
-                "action {}: 'upload' requires a non-empty \"files\" array",
-                i + 1
-            ));
-        }
-        None => {
-            return Err(format!(
-                "action {}: 'upload' requires a \"files\" array of absolute paths",
+                "action {}: 'upload' requires a non-empty \"files\" array of absolute paths",
                 i + 1
             ));
         }
     };
-    let mut paths = Vec::with_capacity(raw.len());
-    for entry in raw {
-        let Some(raw_path) = entry.as_str().filter(|s| !s.trim().is_empty()) else {
-            return Err(format!(
-                "action {}: 'upload' \"files\" entries must be non-empty strings",
-                i + 1
-            ));
+    let mut out = Vec::with_capacity(raw.len());
+    for f in raw {
+        let path = match f.as_str() {
+            Some(p) if !p.is_empty() => p,
+            _ => {
+                return Err(format!(
+                    "action {}: every \"files\" entry must be a non-empty string",
+                    i + 1
+                ));
+            }
         };
-        let path = std::path::PathBuf::from(raw_path);
-        if !path.is_absolute() {
+        if !std::path::Path::new(path).is_absolute() {
             return Err(format!(
-                "action {}: upload path '{raw_path}' is not absolute: the browser \
-                 process cannot resolve a path relative to the agent's working directory",
+                "action {}: upload path \"{path}\" is relative. Use an absolute path: a \
+                 relative one resolves against the browser process's working directory",
                 i + 1
             ));
         }
-        match std::fs::metadata(&path) {
-            Ok(meta) if meta.is_file() => {}
-            Ok(_) => {
-                return Err(format!(
-                    "action {}: upload path '{raw_path}' is not a regular file",
-                    i + 1
-                ));
-            }
-            Err(e) => {
-                return Err(format!(
-                    "action {}: upload path '{raw_path}' does not exist ({e})",
-                    i + 1
-                ));
-            }
-        }
-        paths.push(path.to_string_lossy().into_owned());
+        out.push(path.to_string());
     }
-    Ok(paths)
+    Ok(out)
 }
 
 /// Resolve every upload path in place, before the first CDP call.
