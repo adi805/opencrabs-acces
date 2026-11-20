@@ -41,6 +41,11 @@ use uuid::Uuid;
 /// must never hang forever on a client that went away mid-approval.
 pub const APPROVAL_TIMEOUT_SECS: u64 = 300;
 
+/// The bound is part of the contract: below 30 s a device cannot answer, above
+/// 15 min a dead client stalls the turn. Checked at compile time so a bad value
+/// cannot reach a build.
+const _: () = assert!(APPROVAL_TIMEOUT_SECS >= 30 && APPROVAL_TIMEOUT_SECS <= 900);
+
 /// What `session/send` decided.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SendOutcome {
@@ -404,10 +409,5 @@ mod tests {
     fn device_key_is_stable_and_distinct() {
         assert_eq!(device_key("abc"), device_key("abc"));
         assert_ne!(device_key("abc"), device_key("abd"));
-    }
-
-    #[test]
-    fn approval_timeout_is_bounded() {
-        assert!(APPROVAL_TIMEOUT_SECS >= 30 && APPROVAL_TIMEOUT_SECS <= 900);
     }
 }
