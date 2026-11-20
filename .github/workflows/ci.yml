@@ -718,17 +718,30 @@ jobs:
     name: Test
     needs: [lint, audit]
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'self-hosted' }}
-    # This leg is the release-mode correctness check, so it stays on
-    # `--profile ci` (release, thin LTO). The cheap `citest` profile is
-    # only for the legs that exist to prove the code works, not to prove
-    # it works optimised.
+    # Self-hosted legs are the release-mode correctness check, so they stay on
+    # `--profile ci` (release, thin LTO).
+    #
+    # Fork PRs never reach a self-hosted runner: `runs-on` above pins them to
+    # ubuntu-latest, and the rust-cache `save-if` below only saves on main, so
+    # a PR inside a fork -- where main has no test cache to inherit either --
+    # cold-compiles from scratch on every run. On `ci` that is one rustc at a
+    # time for the whole dependency tree, and it does not fit: run 44702710563
+    # burned its entire 60-minute ceiling there (sampler: load 1.2 on 4 vCPU,
+    # rustc at 1.6 GB) and was cancelled at 09:47:10Z with no `test result:`
+    # line, so the leg reported no verdict at all -- green or red.
+    #
+    # Fork legs therefore run `citest` (opt-level 1, 256 codegen units), the
+    # profile `test-linux` already runs for this same suite.
     env:
-      TEST_PROFILE: ci
-    # 60: fork PRs run this on hosted runners at roughly 3x self-hosted
+      TEST_PROFILE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'citest' || 'ci' }}
+    # 60 for self-hosted. Fork PRs used to run here at roughly 3x self-hosted
     # speed, and the 30 cap killed cold-cache fork runs twice (runs
     # 36078125556 and 36069934718, both cancelled at ~30 while green code
-    # waited). Warm hosted fits in 20; 60 is the cold-cache ceiling.
-    timeout-minutes: 60
+    # waited). Warm hosted fits in 20; 60 is the cold-cache ceiling for `ci`.
+    # 180 for fork legs: `citest` still cold-builds the whole dependency tree
+    # with no cache to inherit, and 180 is the ceiling `test-linux` already
+    # uses for that profile.
+    timeout-minutes: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 180 || 60 }}
     steps: &test-steps
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
