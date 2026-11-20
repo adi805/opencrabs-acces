@@ -183,9 +183,18 @@ jobs:
     # release.yml's build-release matrix already builds + validates Windows
     # before any tag is published, so a platform regression cannot reach a
     # release unnoticed.
+    # Skipped for fork PRs: the matrix below is a single `self-hosted` entry
+    # (aarch64-apple-darwin), and a fork has no self-hosted runner registered
+    # -- `repos/adi805/opencrabs-acces/actions/runners` reports total_count 0,
+    # and run 44702710563 shows this leg created at 09:47:11Z with runner=None
+    # and labels=[], queued and never assigned. `build` is in ci-gate's needs,
+    # so without this carve-out a fork PR could never conclude successfully no
+    # matter how green the tests were. Skipped is not failure/cancelled, so the
+    # gate still passes; the Linux suite and the advisory Windows build remain.
     if: >-
       always() &&
       (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') &&
+      !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) &&
       needs.lint.result == 'success' &&
       needs.audit.result == 'success' &&
       needs.test.result == 'success' &&
@@ -377,11 +386,14 @@ jobs:
     # cmake C++ + ~15 for the thin-LTO link of a 4-vCPU runner); warm runs
     # from rust-cache land near 10. The original 40 cap killed a build that
     # was minutes from linking. Keep a cap so a true hang can't burn 360.
-    # 90 (not 60) while the scoped-test step rides along: the cfg(test) lib
-    # compiles on top of the build. The job is NOT in the required gate, so
-    # the extra ceiling is a priced trade for the first-ever Windows
-    # execution receipts, not silent drift.
-    timeout-minutes: 90
+    # 90 self-hosted, 120 for fork PRs. Run 44730551686 measured the cold
+    # fork path: `Finished `ci` profile [optimized] target(s) in 78m 17s`
+    # at 13:40:20Z, then ~11 minutes of scoped tests before the 90-minute
+    # ceiling landed mid-step. A fork has no cache to inherit (rust-cache
+    # `save-if` is main-only), so 90 was structurally short for that path.
+    # The job is NOT in the required gate: this ceiling buys execution
+    # receipts and blocks nothing.
+    timeout-minutes: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 120 || 90 }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
@@ -652,15 +664,16 @@ jobs:
           done
           exit $status
 
-      # Fail fast from inside the job that failed (#2595): the fan-in `abort`
-      # job cannot do it, because `needs` holds it until the run is over.
-      - name: Cancel this run on failure
-        if: "always() && !success()"  # always() required: GitHub skips steps of a cancelled job
-        uses: ./.github/actions/cancel-run
-        with:
-          token: ${{ github.token }}
-          run-id: ${{ github.run_id }}
-
+      # NO `Cancel this run on failure` step here, deliberately.
+      #
+      # This job is NOT in the required gate (see its comment above), so it
+      # must never be able to cancel a run the gate depends on. It carried
+      # the shared fail-fast step, and its own timeout used it: run
+      # 44730551686 hit the 90-minute ceiling at 13:51:27Z, ran the cancel
+      # step at 13:51:36Z, and the REQUIRED `Test` leg -- 89 minutes into a
+      # cold compile with zero `test result:` lines -- was killed at
+      # 13:51:50Z. An advisory job that can kill a required one turns its
+      # own ceiling into the whole run's ceiling.
   # ── Windows footgun gate (static, cheap, blocks the merge) ─────────────
   # The only python step in this workflow, and deliberately not part of the
   # Windows build lane: it scans source text, so it costs seconds instead
@@ -718,17 +731,30 @@ jobs:
     name: Test
     needs: [lint, audit]
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'self-hosted' }}
-    # This leg is the release-mode correctness check, so it stays on
-    # `--profile ci` (release, thin LTO). The cheap `citest` profile is
-    # only for the legs that exist to prove the code works, not to prove
-    # it works optimised.
+    # Self-hosted legs are the release-mode correctness check, so they stay on
+    # `--profile ci` (release, thin LTO).
+    #
+    # Fork PRs never reach a self-hosted runner: `runs-on` above pins them to
+    # ubuntu-latest, and the rust-cache `save-if` below only saves on main, so
+    # a PR inside a fork -- where main has no test cache to inherit either --
+    # cold-compiles from scratch on every run. On `ci` that is one rustc at a
+    # time for the whole dependency tree, and it does not fit: run 44702710563
+    # burned its entire 60-minute ceiling there (sampler: load 1.2 on 4 vCPU,
+    # rustc at 1.6 GB) and was cancelled at 09:47:10Z with no `test result:`
+    # line, so the leg reported no verdict at all -- green or red.
+    #
+    # Fork legs therefore run `citest` (opt-level 1, 256 codegen units), the
+    # profile `test-linux` already runs for this same suite.
     env:
-      TEST_PROFILE: ci
-    # 60: fork PRs run this on hosted runners at roughly 3x self-hosted
+      TEST_PROFILE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'citest' || 'ci' }}
+    # 60 for self-hosted. Fork PRs used to run here at roughly 3x self-hosted
     # speed, and the 30 cap killed cold-cache fork runs twice (runs
     # 36078125556 and 36069934718, both cancelled at ~30 while green code
-    # waited). Warm hosted fits in 20; 60 is the cold-cache ceiling.
-    timeout-minutes: 60
+    # waited). Warm hosted fits in 20; 60 is the cold-cache ceiling for `ci`.
+    # 180 for fork legs: `citest` still cold-builds the whole dependency tree
+    # with no cache to inherit, and 180 is the ceiling `test-linux` already
+    # uses for that profile.
+    timeout-minutes: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 180 || 60 }}
     steps: &test-steps
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
@@ -769,7 +795,6 @@ jobs:
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install mold + ALSA + X11 dev (Linux)
         # Linux-only toolchain extras; macOS uses the Xcode linker.
@@ -989,6 +1014,7 @@ jobs:
     needs: [gui-filter]
     if: >-
       always() &&
+      !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) &&
       needs.gui-filter.result == 'success' &&
       needs.gui-filter.outputs.run == 'true'
     # ubuntu-24.04 rather than ubuntu-latest: 24.04 is the image release.yml
