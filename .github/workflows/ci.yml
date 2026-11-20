@@ -494,19 +494,32 @@ jobs:
           # cargo writes "test result: FAILED. N passed" on failure, so
           # parsing $out must not assume the ok-form.
           status=0
+          # Per-module wall clock. The slice is captured into $out, so a HANG
+          # prints nothing whatsoever: the 2026-11-20 run sat on this step for
+          # 37m51s with zero output and only ended when the job's
+          # `timeout-minutes: 90` fired, burning the whole lane without ever
+          # naming the module that wedged. `timeout` ships with Git for
+          # Windows, so a stuck module now costs this budget and reports
+          # itself instead of taking the job down with it.
+          slice_timeout=600
           for m in tests::winlock_test tests::service_windows_test tests::utils_shell_test \
                    tests::utils_cwd_test tests::browser_default_windows_test \
                    tests::profile_test tests::desktop_windows_test \
                    tests::desktop_capture_test tests::desktop_input_test \
                    tests::desktop_input_posted_test; do
             set +e
-            out=$(cargo test --locked --profile ci --target x86_64-pc-windows-msvc \
+            out=$(timeout --kill-after=30 "$slice_timeout" \
+                    cargo test --locked --profile ci --target x86_64-pc-windows-msvc \
                     --all-features --lib -- "$m" 2>&1)
             rc=$?
             set -e
             n=$(printf '%s\n' "$out" | sed -n 's/^test result: [a-z]*\. \([0-9]*\) passed.*/\1/p' | head -n1)
             failed=$(printf '%s\n' "$out" | sed -n 's/.*; \([0-9]*\) failed.*/\1/p' | head -n1)
-            if [ $rc -ne 0 ]; then
+            if [ $rc -eq 124 ] || [ $rc -eq 137 ]; then
+              echo "::error::Windows slice TIMEOUT after ${slice_timeout}s (rc=$rc): $m"
+              printf '%s\n' "$out" | tail -40
+              status=1
+            elif [ $rc -ne 0 ]; then
               echo "::warning::Windows slice FAILS (rc=$rc, failed=${failed:-?}): $m"
               # The whole slice output, not a tail. With RUST_BACKTRACE=1 the
               # panic message, which is where the assertion text lives, sits far
