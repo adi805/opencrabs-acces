@@ -280,6 +280,14 @@ impl RelayState {
 
         let relay = Arc::clone(self);
         tokio::spawn(async move {
+            // The same pre-turn hygiene the GUI runs (#2697, #2756): a resend
+            // of the text an unanswered turn left behind must not stack a
+            // second copy of the question in history.
+            let messages = crate::services::MessageService::new(relay.service.clone());
+            crate::services::turn_dedup::drop_unanswered_duplicate(
+                &messages, session_id, &text,
+            )
+            .await;
             let progress = progress_callback(&relay);
             let approval = approval_callback(&relay);
             let result = relay
