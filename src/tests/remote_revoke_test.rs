@@ -28,7 +28,10 @@ fn pairing_issues_scoped_token() {
 
     let (token, session) = store.verify_code(&code, "phone").expect("verify");
     assert!(token.starts_with(crate::remote::pairing::TOKEN_PREFIX));
-    assert_eq!(session.scopes, scopes, "the token carries the code's scopes");
+    assert_eq!(
+        session.scopes, scopes,
+        "the token carries the code's scopes"
+    );
     assert_eq!(session.label, "phone");
     assert!(session.revoked_at.is_none());
 
@@ -43,7 +46,10 @@ fn a_code_is_single_use() {
     let code = store.mint_code(&[SCOPE_READ.to_string()]).expect("mint");
     assert!(store.verify_code(&code, "phone").is_ok());
     assert!(
-        matches!(store.verify_code(&code, "laptop"), Err(VerifyError::NoMatch)),
+        matches!(
+            store.verify_code(&code, "laptop"),
+            Err(VerifyError::NoMatch)
+        ),
         "a consumed code cannot be replayed"
     );
 }

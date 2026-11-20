@@ -81,7 +81,7 @@ pub struct RunningTurn {
     pub started_at: u64,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct SessionSlot {
     running: Option<RunningTurn>,
     queue: VecDeque<QueuedTurn>,
@@ -114,13 +114,7 @@ impl TurnAdmission {
     /// Ask to start a turn for `client_msg_id`.
     ///
     /// `now` is unix seconds, injected so tests do not sleep.
-    pub fn begin(
-        &self,
-        session_id: Uuid,
-        client_msg_id: Uuid,
-        text: &str,
-        now: u64,
-    ) -> Admission {
+    pub fn begin(&self, session_id: Uuid, client_msg_id: Uuid, text: &str, now: u64) -> Admission {
         let mut map = self.slots.lock().unwrap_or_else(|e| e.into_inner());
         let slot = map.entry(session_id).or_default();
 
@@ -262,7 +256,9 @@ impl TurnAdmission {
             }
             slot.queue.clear();
         }
-        map.retain(|_, slot| slot.running.is_some() || !slot.queue.is_empty() || !slot.seen.is_empty());
+        map.retain(|_, slot| {
+            slot.running.is_some() || !slot.queue.is_empty() || !slot.seen.is_empty()
+        });
         swept
     }
 
@@ -445,7 +441,9 @@ mod tests {
         let Admission::Started { turn_id } = adm.begin(s, Uuid::new_v4(), "one", 1) else {
             panic!("expected start");
         };
-        let Admission::Queued { turn_id: queued, .. } = adm.begin(s, Uuid::new_v4(), "two", 2)
+        let Admission::Queued {
+            turn_id: queued, ..
+        } = adm.begin(s, Uuid::new_v4(), "two", 2)
         else {
             panic!("expected queue");
         };
@@ -510,7 +508,11 @@ mod tests {
         let req = Uuid::new_v4();
         let rx = approvals.register(s, req);
         assert_eq!(approvals.pending_for(s), 1);
-        assert!(approvals.decide(s, req, ApprovalDecision::Approve).is_some());
+        assert!(
+            approvals
+                .decide(s, req, ApprovalDecision::Approve)
+                .is_some()
+        );
         assert_eq!(rx.await.unwrap(), ApprovalDecision::Approve);
         assert!(
             approvals.decide(s, req, ApprovalDecision::Deny).is_none(),
@@ -526,9 +528,17 @@ mod tests {
         let other = Uuid::new_v4();
         let req = Uuid::new_v4();
         let _rx = approvals.register(owner, req);
-        assert!(approvals.decide(other, req, ApprovalDecision::Approve).is_none());
+        assert!(
+            approvals
+                .decide(other, req, ApprovalDecision::Approve)
+                .is_none()
+        );
         assert_eq!(approvals.pending_for(owner), 1);
-        assert!(approvals.decide(owner, req, ApprovalDecision::Deny).is_some());
+        assert!(
+            approvals
+                .decide(owner, req, ApprovalDecision::Deny)
+                .is_some()
+        );
     }
 
     #[test]
@@ -536,7 +546,10 @@ mod tests {
         assert_eq!(ApprovalDecision::Approve.as_engine_flags(), (true, false));
         assert_eq!(ApprovalDecision::Always.as_engine_flags(), (true, true));
         assert_eq!(ApprovalDecision::Deny.as_engine_flags(), (false, false));
-        assert_eq!(ApprovalDecision::parse("always"), Some(ApprovalDecision::Always));
+        assert_eq!(
+            ApprovalDecision::parse("always"),
+            Some(ApprovalDecision::Always)
+        );
         assert_eq!(ApprovalDecision::parse("yes"), None);
     }
 }

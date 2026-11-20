@@ -97,8 +97,10 @@ async fn require_bearer(
     mut req: axum::http::Request<axum::body::Body>,
     next: middleware::Next,
 ) -> axum::response::Response {
-    let presented = bearer_from_headers(req.headers());
-    let Some(scopes) = credential_scopes(&state, presented) else {
+    // Owned, not borrowed: `req.extensions_mut()` below needs the request
+    // mutably while the token is still read afterwards.
+    let presented = bearer_from_headers(req.headers()).map(str::to_string);
+    let Some(scopes) = credential_scopes(&state, presented.as_deref()) else {
         return unauthorized_response();
     };
     req.extensions_mut().insert(GrantedScopes(scopes));
@@ -106,6 +108,7 @@ async fn require_bearer(
     // device token carries one, so this costs nothing on the legacy path.
     let device = if state.relay.is_some() {
         presented
+            .as_deref()
             .filter(|t| t.starts_with(crate::remote::pairing::TOKEN_PREFIX))
             .and_then(|t| state.pairing.verify_token(t).map(|s| s.id))
     } else {
@@ -422,9 +425,14 @@ async fn handle_jsonrpc(
         if req.method == "session/attach" {
             return handle_attach(relay, req, device).await;
         }
-        if let Some(response) =
-            crate::remote::http::dispatch(relay, req.id, &req.method, req.params, device.as_deref())
-                .await
+        if let Some(response) = crate::remote::http::dispatch(
+            relay,
+            req.id.clone(),
+            &req.method,
+            req.params.clone(),
+            device.as_deref(),
+        )
+        .await
         {
             return (StatusCode::OK, Json(response)).into_response();
         }
@@ -509,14 +517,22 @@ async fn handle_attach(
         Err(e) => return (StatusCode::OK, Json(e.to_response(id))).into_response(),
     };
 
+    // `Sse::new` wants a `TryStream<Ok = Event>`, so each frame is wrapped in
+    // `Ok`; the unfold never fails, hence `Infallible`.
     let sse_stream = stream::unfold(
         (replay.into_iter(), sub.rx),
         |(mut replay, mut rx)| async move {
             if let Some(frame) = replay.next() {
-                return Some((frame_event(&frame), (replay, rx)));
+                return Some((
+                    Ok::<_, std::convert::Infallible>(frame_event(&frame)),
+                    (replay, rx),
+                ));
             }
             let frame = rx.recv().await?;
-            Some((frame_event(&frame), (replay, rx)))
+            Some((
+                Ok::<_, std::convert::Infallible>(frame_event(&frame)),
+                (replay, rx),
+            ))
         },
     );
     Sse::new(sse_stream).into_response()

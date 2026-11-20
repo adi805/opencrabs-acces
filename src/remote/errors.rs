@@ -77,7 +77,10 @@ pub enum RemoteError {
     /// `resume_from` fell out of the ring buffer.
     ResumeGap { oldest_seq: u64 },
     /// The path lacks an `engine:` / `client:<device>:` prefix.
-    PathNamespaceUnknown { input: String, available: Vec<String> },
+    PathNamespaceUnknown {
+        input: String,
+        available: Vec<String>,
+    },
     /// Canonicalisation escaped the granted root.
     PathOutsideGrant { grant_root: String },
     /// The named device has no live connection.
@@ -358,7 +361,9 @@ mod tests {
             let in_reserved = (-32026..=-32010).contains(&code);
             let reused = matches!(
                 code,
-                error_codes::INSUFFICIENT_SCOPE | error_codes::INVALID_PARAMS | error_codes::INTERNAL_ERROR
+                error_codes::INSUFFICIENT_SCOPE
+                    | error_codes::INVALID_PARAMS
+                    | error_codes::INTERNAL_ERROR
             );
             assert!(in_reserved || reused, "{} uses code {code}", e.code());
         }
@@ -392,22 +397,25 @@ mod tests {
 
     #[test]
     fn retryable_is_limited_to_transient_failures() {
-        assert!(RemoteError::ClientOffline {
-            device_id: "d".into()
-        }
-        .retryable());
-        assert!(RemoteError::RateLimited {
-            retry_after_ms: 1
-        }
-        .retryable());
-        assert!(!RemoteError::SessionNotFound {
-            session_id: Uuid::nil()
-        }
-        .retryable());
-        assert!(!RemoteError::ScopeDenied {
-            missing_scope: "fs:client".into()
-        }
-        .retryable());
+        assert!(
+            RemoteError::ClientOffline {
+                device_id: "d".into()
+            }
+            .retryable()
+        );
+        assert!(RemoteError::RateLimited { retry_after_ms: 1 }.retryable());
+        assert!(
+            !RemoteError::SessionNotFound {
+                session_id: Uuid::nil()
+            }
+            .retryable()
+        );
+        assert!(
+            !RemoteError::ScopeDenied {
+                missing_scope: "fs:client".into()
+            }
+            .retryable()
+        );
     }
 
     #[test]

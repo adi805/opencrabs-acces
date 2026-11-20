@@ -109,9 +109,12 @@ impl RelayState {
     /// out of band). Everything else is fire-and-forget by design: a slow
     /// client is the registry's problem, never the turn's.
     pub fn publish(&self, session_id: Uuid, kind: &str, payload: Value) -> Option<Frame> {
-        let frame = self.seq.for_session(session_id).publish(kind, payload).ok()?;
-        self.registry
-            .publish(session_id, Arc::new(frame.clone()));
+        let frame = self
+            .seq
+            .for_session(session_id)
+            .publish(kind, payload)
+            .ok()?;
+        self.registry.publish(session_id, Arc::new(frame.clone()));
         Some(frame)
     }
 
@@ -191,7 +194,8 @@ impl RelayState {
                         }),
                     )
                     .ok_or_else(|| RemoteError::internal("user message frame too large"))?;
-                self.admission.remember_seq(session_id, client_msg_id, frame.seq);
+                self.admission
+                    .remember_seq(session_id, client_msg_id, frame.seq);
                 Ok(SendOutcome {
                     seq: frame.seq,
                     queued: true,
@@ -211,7 +215,8 @@ impl RelayState {
                         }),
                     )
                     .ok_or_else(|| RemoteError::internal("user message frame too large"))?;
-                self.admission.remember_seq(session_id, client_msg_id, frame.seq);
+                self.admission
+                    .remember_seq(session_id, client_msg_id, frame.seq);
                 self.spawn_turn(session_id, turn_id, text);
                 Ok(SendOutcome {
                     seq: frame.seq,
@@ -284,10 +289,8 @@ impl RelayState {
             // of the text an unanswered turn left behind must not stack a
             // second copy of the question in history.
             let messages = crate::services::MessageService::new(relay.service.clone());
-            crate::services::turn_dedup::drop_unanswered_duplicate(
-                &messages, session_id, &text,
-            )
-            .await;
+            crate::services::turn_dedup::drop_unanswered_duplicate(&messages, session_id, &text)
+                .await;
             let progress = progress_callback(&relay);
             let approval = approval_callback(&relay);
             let result = relay
@@ -305,7 +308,11 @@ impl RelayState {
                 )
                 .await;
 
-            relay.cancels.lock().unwrap_or_else(|e| e.into_inner()).remove(&turn_id);
+            relay
+                .cancels
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&turn_id);
             relay.approvals.clear_session(session_id);
             match result {
                 Ok(_) => {

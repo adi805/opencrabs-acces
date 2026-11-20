@@ -65,7 +65,10 @@ async fn denied_scope_writes_nothing() {
         .pairing
         .mint_code(&[crate::remote::scopes::SCOPE_READ.to_string()])
         .expect("mint");
-    let (token, _) = state.pairing.verify_code(&code, "read only").expect("verify");
+    let (token, _) = state
+        .pairing
+        .verify_code(&code, "read only")
+        .expect("verify");
 
     let app = build_router(state.clone(), &[]);
     let resp = app
@@ -73,7 +76,11 @@ async fn denied_scope_writes_nothing() {
         .await
         .expect("response");
 
-    assert_eq!(resp.status(), StatusCode::OK, "JSON-RPC errors ride HTTP 200");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "JSON-RPC errors ride HTTP 200"
+    );
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .expect("body");

@@ -46,9 +46,7 @@ pub async fn dispatch(
         "session/send" => session_api::handle_session_send(id, params, relay).await,
         "session/interrupt" => session_api::handle_session_interrupt(id, params, relay).await,
         "session/ack" => session_api::handle_session_ack(id, params, relay).await,
-        "session/approve" => {
-            session_api::handle_session_approve(id, params, relay, device).await
-        }
+        "session/approve" => session_api::handle_session_approve(id, params, relay, device).await,
         "session/presence" => session_api::handle_session_presence(id, params, relay).await,
         "session/detach" => session_api::handle_session_detach(id, params, relay).await,
         "device/list" | "device/revoke" | "device/self" => {

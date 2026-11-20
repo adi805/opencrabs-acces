@@ -36,9 +36,7 @@ async fn attach_and_timeout() {
     drop(phone_sub);
     let outcomes = registry.publish(session, frame(1));
     assert!(
-        outcomes
-            .iter()
-            .any(|o| matches!(o, Delivery::Gone { .. })),
+        outcomes.iter().any(|o| matches!(o, Delivery::Gone { .. })),
         "the dead stream is noticed"
     );
     assert_eq!(registry.devices(session), vec![laptop], "phone is gone");

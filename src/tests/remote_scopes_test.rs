@@ -60,7 +60,12 @@ fn scope_assignment_matrix() {
 #[test]
 fn session_scope_matrix() {
     assert_eq!(scope_for_method("session/list"), Some(SCOPE_SESSION_LIST));
-    for m in ["session/history", "session/attach", "session/ack", "session/presence"] {
+    for m in [
+        "session/history",
+        "session/attach",
+        "session/ack",
+        "session/presence",
+    ] {
         assert_eq!(scope_for_method(m), Some(SCOPE_SESSION_READ), "{m}");
     }
     assert_eq!(scope_for_method("session/send"), Some(SCOPE_SESSION_SEND));
@@ -129,7 +134,10 @@ fn allows_is_exact_membership() {
 #[test]
 fn allows_any_matches_a_single_held_scope() {
     let granted = vec![SCOPE_SESSION_READ.to_string()];
-    assert!(allows_any(&granted, &[SCOPE_SESSION_READ, SCOPE_SESSION_SEND]));
+    assert!(allows_any(
+        &granted,
+        &[SCOPE_SESSION_READ, SCOPE_SESSION_SEND]
+    ));
     assert!(!allows_any(&granted, &[SCOPE_SESSION_SEND]));
     assert!(!allows_any(&[], ALL_SCOPES));
 }
@@ -154,7 +162,10 @@ fn sanitize_drops_unknown_and_dedups() {
 
 #[test]
 fn default_pairing_scopes_are_the_classic_pair() {
-    assert_eq!(default_pairing_scopes(), vec![SCOPE_READ.to_string(), SCOPE_SEND.to_string()]);
+    assert_eq!(
+        default_pairing_scopes(),
+        vec![SCOPE_READ.to_string(), SCOPE_SEND.to_string()]
+    );
     for s in DEFAULT_PAIRING_SCOPES {
         assert!(is_known_scope(s));
     }

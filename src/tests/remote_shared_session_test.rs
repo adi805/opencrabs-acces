@@ -62,7 +62,9 @@ async fn a_client_joining_mid_turn_sees_the_rest_of_the_sequence() {
     let mut early = registry.subscribe(session, Uuid::new_v4());
 
     for i in 0..3 {
-        let frame = seq.publish("text.delta", json!({ "i": i })).expect("publish");
+        let frame = seq
+            .publish("text.delta", json!({ "i": i }))
+            .expect("publish");
         registry.publish(session, Arc::new(frame));
     }
 

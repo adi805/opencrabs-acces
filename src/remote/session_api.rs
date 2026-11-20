@@ -50,7 +50,12 @@ fn need_uuid(params: &Value, field: &str) -> Result<Uuid, RemoteError> {
 }
 
 /// An optional integer parameter, clamped to `1..=max`.
-fn opt_limit(params: &Value, field: &str, default: usize, max: usize) -> Result<usize, RemoteError> {
+fn opt_limit(
+    params: &Value,
+    field: &str,
+    default: usize,
+    max: usize,
+) -> Result<usize, RemoteError> {
     match params.get(field) {
         None | Some(Value::Null) => Ok(default),
         Some(v) => {
@@ -89,7 +94,10 @@ pub async fn handle_session_list(
     };
     // The cursor is the last `updated_at` the client saw, so paging is
     // stable even when a session is touched mid-page.
-    let cursor = params.get("cursor").and_then(Value::as_str).map(str::to_string);
+    let cursor = params
+        .get("cursor")
+        .and_then(Value::as_str)
+        .map(str::to_string);
 
     let repo = SessionRepository::new(relay.service.pool());
     let options = crate::db::repository::SessionListOptions {
@@ -231,13 +239,12 @@ pub async fn handle_session_ack(
 ) -> JsonRpcResponse {
     let result = async {
         let session_id = need_uuid(&params, "session_id")?;
-        let seq = params
-            .get("seq")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| RemoteError::ValidationError {
+        let seq = params.get("seq").and_then(Value::as_u64).ok_or_else(|| {
+            RemoteError::ValidationError {
                 field: "seq".into(),
                 reason: "required non-negative integer".into(),
-            })?;
+            }
+        })?;
         ensure_session(&relay, session_id).await?;
         relay.ack(session_id, seq);
         Ok(json!({ "ok": true }))
@@ -257,10 +264,11 @@ pub async fn handle_session_approve(
         let session_id = need_uuid(&params, "session_id")?;
         let request_id = need_uuid(&params, "request_id")?;
         let raw = need_str(&params, "decision")?;
-        let decision = ApprovalDecision::parse(&raw).ok_or_else(|| RemoteError::ValidationError {
-            field: "decision".into(),
-            reason: "must be approve, always or deny".into(),
-        })?;
+        let decision =
+            ApprovalDecision::parse(&raw).ok_or_else(|| RemoteError::ValidationError {
+                field: "decision".into(),
+                reason: "must be approve, always or deny".into(),
+            })?;
         ensure_session(&relay, session_id).await?;
         relay.approve(session_id, request_id, decision)?;
         Ok(json!({ "ok": true, "decided_by": device_id }))
@@ -361,7 +369,10 @@ mod tests {
     #[test]
     fn opt_limit_clamps_and_rejects_zero() {
         assert_eq!(opt_limit(&json!({}), "limit", 50, 200).unwrap(), 50);
-        assert_eq!(opt_limit(&json!({"limit": 5}), "limit", 50, 200).unwrap(), 5);
+        assert_eq!(
+            opt_limit(&json!({"limit": 5}), "limit", 50, 200).unwrap(),
+            5
+        );
         assert_eq!(
             opt_limit(&json!({"limit": 9999}), "limit", 50, 200).unwrap(),
             200
@@ -372,9 +383,12 @@ mod tests {
 
     #[test]
     fn validation_errors_are_jsonrpc_shaped() {
-        let resp = respond(json!(1), Err(RemoteError::SessionNotFound {
-            session_id: Uuid::nil(),
-        }));
+        let resp = respond(
+            json!(1),
+            Err(RemoteError::SessionNotFound {
+                session_id: Uuid::nil(),
+            }),
+        );
         let err = resp.error.expect("error");
         assert_eq!(err.data.unwrap()["code"], "SESSION_NOT_FOUND");
     }

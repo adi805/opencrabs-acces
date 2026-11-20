@@ -30,7 +30,8 @@ fn provider_failure_forwarded() {
     assert_eq!(switched.kind, "provider.switched");
     assert_ne!(retry.kind, switched.kind, "two distinct banners");
 
-    seq.publish(retry.kind, retry.payload).expect("publish retry");
+    seq.publish(retry.kind, retry.payload)
+        .expect("publish retry");
     seq.publish(switched.kind, switched.payload)
         .expect("publish switch");
 

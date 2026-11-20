@@ -133,10 +133,9 @@ pub fn map_progress(event: &ProgressEvent) -> RelayEvent {
         ProgressEvent::SelfHealingAlert { message } => {
             RelayEvent::new("self_healing", json!({ "message": message }))
         }
-        ProgressEvent::StripStreamedContent { bytes, reason } => RelayEvent::new(
-            "text.strip",
-            json!({ "bytes": bytes, "reason": reason }),
-        ),
+        ProgressEvent::StripStreamedContent { bytes, reason } => {
+            RelayEvent::new("text.strip", json!({ "bytes": bytes, "reason": reason }))
+        }
         ProgressEvent::ProviderSwitched {
             from_name,
             from_model,
@@ -153,21 +152,23 @@ pub fn map_progress(event: &ProgressEvent) -> RelayEvent {
                 "reason": reason,
             }),
         ),
-        ProgressEvent::RetryAttempt { attempt, max, reason } => RelayEvent::new(
+        ProgressEvent::RetryAttempt {
+            attempt,
+            max,
+            reason,
+        } => RelayEvent::new(
             "provider.retry",
             json!({ "attempt": attempt, "max": max, "reason": reason }),
         ),
         // The suggestion payload is a UI type, not a wire type: the count is
         // enough for a remote client to draw a pick-list placeholder, and the
         // options themselves travel in the turn's final message.
-        ProgressEvent::SuggestedOptions(items) => RelayEvent::new(
-            "suggested.options",
-            json!({ "count": items.len() }),
-        ),
-        ProgressEvent::PlanCompleted { title, tasks } => RelayEvent::new(
-            "plan.completed",
-            json!({ "title": title, "tasks": tasks }),
-        ),
+        ProgressEvent::SuggestedOptions(items) => {
+            RelayEvent::new("suggested.options", json!({ "count": items.len() }))
+        }
+        ProgressEvent::PlanCompleted { title, tasks } => {
+            RelayEvent::new("plan.completed", json!({ "title": title, "tasks": tasks }))
+        }
     }
 }
 
@@ -240,9 +241,7 @@ mod tests {
                 binary_path: None,
             },
             ProgressEvent::TokenCount(1234),
-            ProgressEvent::ReasoningChunk {
-                text: "why".into(),
-            },
+            ProgressEvent::ReasoningChunk { text: "why".into() },
             ProgressEvent::SelfHealingAlert {
                 message: "recovered".into(),
             },

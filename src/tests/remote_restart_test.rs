@@ -44,10 +44,12 @@ async fn no_phantom_turn_after_restart() {
     let relay = relay().await;
     let session = new_session(&relay).await;
 
-    let turn_id = match relay
-        .admission
-        .begin(session, Uuid::new_v4(), "in flight", crate::remote::now_secs())
-    {
+    let turn_id = match relay.admission.begin(
+        session,
+        Uuid::new_v4(),
+        "in flight",
+        crate::remote::now_secs(),
+    ) {
         Admission::Started { turn_id } => turn_id,
         _ => panic!("the turn must start"),
     };
@@ -65,7 +67,10 @@ async fn no_phantom_turn_after_restart() {
     };
     let last = frames.last().expect("the sweep publishes a frame");
     assert_eq!(last.kind, KIND_TURN_FAILED);
-    assert_eq!(last.payload["reason"], serde_json::json!("engine restarted"));
+    assert_eq!(
+        last.payload["reason"],
+        serde_json::json!("engine restarted")
+    );
     assert_eq!(last.payload["turn_id"], serde_json::json!(turn_id));
 }
 

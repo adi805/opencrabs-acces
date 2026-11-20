@@ -68,6 +68,7 @@ pub struct SubscriberInfo {
     pub device_id: Uuid,
 }
 
+#[derive(Debug)]
 struct Entry {
     info: SubscriberInfo,
     tx: mpsc::Sender<Arc<Frame>>,

@@ -242,10 +242,7 @@ impl SessionSeq {
     /// Drop every buffered frame, keeping the sequence monotonic. Used when
     /// a session is deleted; a re-created session starts from 1.
     pub fn clear(&self) {
-        self.ring
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        self.ring.lock().unwrap_or_else(|e| e.into_inner()).clear();
         *self.bytes.lock().unwrap_or_else(|e| e.into_inner()) = 0;
     }
 }
@@ -351,7 +348,8 @@ mod tests {
         // Each frame costs roughly 40+ bytes; a 200-byte budget holds a few.
         let s = seq_with(1000, 200);
         for _ in 0..20 {
-            s.publish("tool.completed", json!({"summary": "0123456789"})).unwrap();
+            s.publish("tool.completed", json!({"summary": "0123456789"}))
+                .unwrap();
         }
         assert!(s.bytes() <= 200, "bytes {} over budget", s.bytes());
         assert!(s.len() < 20);
@@ -360,7 +358,9 @@ mod tests {
     #[test]
     fn frame_larger_than_budget_is_refused_without_advancing_seq() {
         let s = seq_with(10, 32);
-        let err = s.publish("artifact", json!({"blob": "x".repeat(200)})).unwrap_err();
+        let err = s
+            .publish("artifact", json!({"blob": "x".repeat(200)}))
+            .unwrap_err();
         assert!(matches!(err, PublishError::FrameTooLarge { .. }));
         assert_eq!(s.latest_seq(), 0);
         assert!(s.is_empty());

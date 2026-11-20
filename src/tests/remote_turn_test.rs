@@ -137,13 +137,14 @@ async fn interrupt_broadcasts() {
     let relay = relay().await;
     let session = new_session(&relay).await;
 
-    let turn_id = match relay
-        .admission
-        .begin(session, Uuid::new_v4(), "hi", crate::remote::now_secs())
-    {
-        Admission::Started { turn_id } => turn_id,
-        _ => panic!("the turn must start"),
-    };
+    let turn_id =
+        match relay
+            .admission
+            .begin(session, Uuid::new_v4(), "hi", crate::remote::now_secs())
+        {
+            Admission::Started { turn_id } => turn_id,
+            _ => panic!("the turn must start"),
+        };
 
     assert!(relay.interrupt(session, turn_id), "the running turn is hit");
 
@@ -163,21 +164,23 @@ async fn a_stale_interrupt_does_not_kill_the_next_turn() {
     let relay = relay().await;
     let session = new_session(&relay).await;
 
-    let first = match relay
-        .admission
-        .begin(session, Uuid::new_v4(), "one", crate::remote::now_secs())
-    {
-        Admission::Started { turn_id } => turn_id,
-        _ => panic!("first turn starts"),
-    };
+    let first =
+        match relay
+            .admission
+            .begin(session, Uuid::new_v4(), "one", crate::remote::now_secs())
+        {
+            Admission::Started { turn_id } => turn_id,
+            _ => panic!("first turn starts"),
+        };
     assert!(relay.interrupt(session, first));
-    let second = match relay
-        .admission
-        .begin(session, Uuid::new_v4(), "two", crate::remote::now_secs())
-    {
-        Admission::Started { turn_id } => turn_id,
-        _ => panic!("second turn starts once the slot is free"),
-    };
+    let second =
+        match relay
+            .admission
+            .begin(session, Uuid::new_v4(), "two", crate::remote::now_secs())
+        {
+            Admission::Started { turn_id } => turn_id,
+            _ => panic!("second turn starts once the slot is free"),
+        };
 
     assert!(
         !relay.interrupt(session, first),

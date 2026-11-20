@@ -8,7 +8,7 @@
 
 use crate::a2a::types::JsonRpcResponse;
 use crate::remote::errors::RemoteError;
-use crate::remote::relay::{device_key, RelayState};
+use crate::remote::relay::{RelayState, device_key};
 use crate::remote::session_api::method_not_found;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -74,10 +74,7 @@ pub fn handle_device_revoke(id: Value, params: Value, relay: Arc<RelayState>) ->
                 detached_sessions = touched.len(),
                 "remote device revoked"
             );
-            JsonRpcResponse::success(
-                id,
-                json!({ "revoked": count > 0, "tokens_revoked": count }),
-            )
+            JsonRpcResponse::success(id, json!({ "revoked": count > 0, "tokens_revoked": count }))
         }
         Err(e) => RemoteError::internal(e.to_string()).to_response(id),
     }
