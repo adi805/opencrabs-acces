@@ -321,6 +321,14 @@ jobs:
     # also lands here, since outputs.run stays empty.
     if: needs.windows-filter.outputs.run == 'true'
     runs-on: windows-latest
+    # thin-LTO is pure cost on this lane. The job builds, then runs a
+    # behaviour slice; nothing here ships, so the ~15-minute thin-LTO link
+    # buys zero and the scoped-test compile pays it a second time. This is
+    # the same one-line override that took the Test job from 36m29s of
+    # compile (preempted before the suite ever ran) to a green 88s suite,
+    # applied to the last job still paying it.
+    env:
+      CARGO_PROFILE_CI_LTO: "false"
     # 60 min: a COLD windows-latest run needs ~48 (33 compile incl. llama's
     # cmake C++ + ~15 for the thin-LTO link of a 4-vCPU runner); warm runs
     # from rust-cache land near 10. The original 40 cap killed a build that
@@ -502,11 +510,22 @@ jobs:
           # Windows, so a stuck module now costs this budget and reports
           # itself instead of taking the job down with it.
           slice_timeout=600
+          # A per-module budget alone cannot save the job: ten modules times
+          # 600s is 100 minutes, past the 90-minute cap, so ten wedged modules
+          # would still end as a bare "operation was canceled" with nothing
+          # named. This ceiling fails the step at 65 minutes instead, leaving
+          # room for the post steps and naming the module it was about to run.
+          slice_deadline=$(( $(date +%s) + 3900 ))
           for m in tests::winlock_test tests::service_windows_test tests::utils_shell_test \
                    tests::utils_cwd_test tests::browser_default_windows_test \
                    tests::profile_test tests::desktop_windows_test \
                    tests::desktop_capture_test tests::desktop_input_test \
                    tests::desktop_input_posted_test; do
+            if [ "$(date +%s)" -ge "$slice_deadline" ]; then
+              echo "::error::Windows slice DEADLINE exceeded before running: $m"
+              status=1
+              break
+            fi
             set +e
             out=$(timeout --kill-after=30 "$slice_timeout" \
                     cargo test --locked --profile ci --target x86_64-pc-windows-msvc \
