@@ -6,7 +6,7 @@
 //! dispatcher unchanged.
 
 use crate::a2a::types::JsonRpcResponse;
-use crate::remote::{device_api, relay::RelayState, session_api};
+use crate::remote::{device_api, fs_proxy, relay::RelayState, session_api};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -24,6 +24,10 @@ pub const REMOTE_METHODS: &[&str] = &[
     "device/list",
     "device/revoke",
     "device/self",
+    "fs/list",
+    "fs/read",
+    "fs/write",
+    "fs/reply",
 ];
 
 /// True when `method` belongs to the remote surface.
@@ -51,6 +55,9 @@ pub async fn dispatch(
         "session/detach" => session_api::handle_session_detach(id, params, relay).await,
         "device/list" | "device/revoke" | "device/self" => {
             device_api::dispatch_device(id, method, params, relay, device)
+        }
+        "fs/list" | "fs/read" | "fs/write" | "fs/reply" => {
+            fs_proxy::dispatch_fs(id, method, params, relay).await
         }
         _ => return None,
     };
@@ -90,6 +97,17 @@ mod tests {
     fn every_device_method_carries_a_scope() {
         for m in ["device/list", "device/revoke"] {
             assert!(scope_for_method(m).is_some(), "{m} has no scope");
+        }
+    }
+
+    #[test]
+    fn every_fs_method_carries_the_client_fs_scope() {
+        for m in REMOTE_METHODS.iter().filter(|m| m.starts_with("fs/")) {
+            assert_eq!(
+                scope_for_method(m),
+                Some(crate::remote::scopes::SCOPE_FS_CLIENT),
+                "{m} must gate on fs:client"
+            );
         }
     }
 }
