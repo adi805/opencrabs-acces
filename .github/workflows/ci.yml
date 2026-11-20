@@ -795,7 +795,6 @@ jobs:
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install mold + ALSA + X11 dev (Linux)
         # Linux-only toolchain extras; macOS uses the Xcode linker.
@@ -1015,6 +1014,7 @@ jobs:
     needs: [gui-filter]
     if: >-
       always() &&
+      !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) &&
       needs.gui-filter.result == 'success' &&
       needs.gui-filter.outputs.run == 'true'
     # ubuntu-24.04 rather than ubuntu-latest: 24.04 is the image release.yml

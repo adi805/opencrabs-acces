@@ -130,9 +130,14 @@ pub fn map_progress(event: &ProgressEvent) -> RelayEvent {
         ProgressEvent::ReasoningChunk { text } => {
             RelayEvent::new("reasoning.delta", json!({ "text": text }))
         }
-        ProgressEvent::SelfHealingAlert { message } => {
-            RelayEvent::new("self_healing", json!({ "message": message }))
-        }
+        // A self-healing alert is a display string, so it takes the same dash
+        // normalization as every other SelfHealingAlert renderer. The guard
+        // `em_dash_guard_test::every_self_healing_renderer_normalizes_dashes`
+        // fails the build when a renderer skips it.
+        ProgressEvent::SelfHealingAlert { message } => RelayEvent::new(
+            "self_healing",
+            json!({ "message": crate::utils::sanitize::normalize_dashes(&message) }),
+        ),
         ProgressEvent::StripStreamedContent { bytes, reason } => {
             RelayEvent::new("text.strip", json!({ "bytes": bytes, "reason": reason }))
         }

@@ -22,7 +22,12 @@ async fn state() -> A2aState {
         port: 18790,
         agent_service: helpers::placeholder_agent_service().await,
         service_context: helpers::placeholder_service_context().await,
-        api_key: None,
+        // A pairing token's scopes are only consulted when an api_key is
+        // configured: `credential_scopes` treats "no api_key" as the legacy
+        // loopback-open posture and hands EVERY caller all scopes, so a
+        // read-only token would sail past the gate and this suite would be
+        // asserting nothing. The api_key makes the `ocpair_` branch live.
+        api_key: Some("scope-denied-api-key".to_string()),
         pairing: crate::remote::pairing::PairingStore::new(std::env::temp_dir().join(format!(
             "oc-scope-denied-{}-{}.json",
             std::process::id(),
