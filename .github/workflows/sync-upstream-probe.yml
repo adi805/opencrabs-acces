@@ -1,0 +1,84 @@
+name: Sync upstream probe
+
+# Computes a merge without committing it, so the conflict list and the set of
+# files upstream would add come from git itself instead of a hand-kept guess.
+# Read-only by design: it never pushes, so it is safe to run against main.
+on:
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: Fork branch to merge into
+        required: true
+        default: main
+      upstream_ref:
+        description: Ref in this repo pointing at the upstream commit
+        required: true
+        default: upstream-main
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_ref }}
+          fetch-depth: 0
+
+      - name: Fetch upstream ref
+        run: git fetch --no-tags origin "${{ inputs.upstream_ref }}:refs/remotes/origin/${{ inputs.upstream_ref }}"
+
+      - name: Attempt merge without committing
+        run: |
+          set -u
+          git config user.name "sync-probe"
+          git config user.email "sync-probe@users.noreply.github.com"
+          base="origin/${{ inputs.upstream_ref }}"
+          echo "merge base: $(git merge-base HEAD "$base")"
+          echo "upstream  : $(git rev-parse "$base")"
+          git merge --no-commit --no-ff "$base" > merge.log 2>&1 || true
+          sed -n '1,40p' merge.log
+
+      - name: Report conflicts and incoming files
+        run: |
+          set -u
+          {
+            echo "## Sync probe: \`${{ inputs.base_ref }}\` <- \`${{ inputs.upstream_ref }}\`"
+            echo
+            echo "### Conflicted files"
+            echo '```'
+            git diff --name-only --diff-filter=U | sort || true
+            echo '```'
+            echo
+            echo "### Files upstream adds (staged, not in base)"
+            echo '```'
+            git diff --cached --name-only --diff-filter=A | sort || true
+            echo '```'
+            echo
+            echo "### Totals"
+            echo '```'
+            echo "conflicts: $(git diff --name-only --diff-filter=U | wc -l)"
+            echo "added    : $(git diff --cached --name-only --diff-filter=A | wc -l)"
+            echo "modified : $(git diff --cached --name-only --diff-filter=M | wc -l)"
+            echo "deleted  : $(git diff --cached --name-only --diff-filter=D | wc -l)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload lists
+        run: |
+          set -u
+          mkdir -p out
+          git diff --name-only --diff-filter=U | sort > out/conflicts.txt
+          git diff --cached --name-only --diff-filter=A | sort > out/added.txt
+          git diff --cached --name-only --diff-filter=M | sort > out/modified.txt
+          git diff --cached --name-only --diff-filter=D | sort > out/deleted.txt
+          wc -l out/*.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sync-probe-${{ inputs.base_ref }}
+          path: out/
+          retention-days: 14
