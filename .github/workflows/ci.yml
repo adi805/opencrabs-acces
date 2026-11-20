@@ -718,6 +718,24 @@ jobs:
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+          # Thin LTO is the reason this leg dies before it runs a test.
+          # `[profile.ci]` inherits `release`, which sets `lto = "thin"`, so
+          # every dependency AND this crate get LTO'd: 825 `Compiling` lines
+          # before the suite starts. Before the v0.5.14 merge that fit on a
+          # hosted runner (run 76f695018: Test 14:35:22Z to 14:55:35Z, suite
+          # included). After it the crate is tens of thousands of lines
+          # bigger and the job stops fitting: run 44627855229 attempt 6 ran
+          # 00:13:36Z to 00:34:17Z, spent its last six minutes inside the
+          # single `rustc --crate-name opencrabs src/lib.rs` invocation (the
+          # LTO phase), then received SIGTERM with zero `test result:` lines
+          # in the log. Nothing about the tests was ever exercised.
+          #
+          # Disabling LTO here removes the memory-heavy phase from a leg that
+          # only runs a test binary, and leaves lint, coverage and every build
+          # job on the profile they were tuned for. If this still overruns,
+          # the next lever is fewer features on this leg, not a longer timeout:
+          # the job never hits its own 90 minute cap.
+          CARGO_PROFILE_CI_LTO: "false"
         # #1936: the suite can freeze with every test-thread slot blocked;
         # before, the job just burned timeout-minutes and died with no
         # verdict. The wrapper detects the silence, dumps thread stacks of
