@@ -183,9 +183,18 @@ jobs:
     # release.yml's build-release matrix already builds + validates Windows
     # before any tag is published, so a platform regression cannot reach a
     # release unnoticed.
+    # Skipped for fork PRs: the matrix below is a single `self-hosted` entry
+    # (aarch64-apple-darwin), and a fork has no self-hosted runner registered
+    # -- `repos/adi805/opencrabs-acces/actions/runners` reports total_count 0,
+    # and run 44702710563 shows this leg created at 09:47:11Z with runner=None
+    # and labels=[], queued and never assigned. `build` is in ci-gate's needs,
+    # so without this carve-out a fork PR could never conclude successfully no
+    # matter how green the tests were. Skipped is not failure/cancelled, so the
+    # gate still passes; the Linux suite and the advisory Windows build remain.
     if: >-
       always() &&
       (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') &&
+      !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) &&
       needs.lint.result == 'success' &&
       needs.audit.result == 'success' &&
       needs.test.result == 'success' &&
