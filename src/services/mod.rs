@@ -11,6 +11,7 @@ pub mod project;
 pub mod project_match;
 pub mod session;
 pub mod surface;
+pub mod turn_dedup;
 
 pub use context::{ServiceContext, ServiceManager};
 pub use file::FileService;

@@ -343,6 +343,13 @@ winresource = "0.1"
 default = ["telegram", "whatsapp", "discord", "slack", "trello", "local-stt", "local-tts", "browser", "rtk", "code-graph", "pdfium", "notification-sound"]
 # Profiling feature enables pprof on Unix only (no-op on Windows)
 profiling = []
+# Remote relay surface: the shared-live-session engine (subscriber registry,
+# per-session seq, turn admission, presence, client filesystem proxy and
+# artifact transfer). Off by default so a plain build behaves exactly as it
+# did before this surface existed; a rollback is a rebuild without the flag
+# rather than a revert. The pre-existing pairing/scopes/tunnel modules are
+# not gated — they ship today and other code depends on them.
+remote = []
 # RTK (Rust Token Killer) integration - filters bash command outputs to save 60-90% tokens
 rtk = []
 # Offline evaluation harness (context engineering + memory evals). Compiled

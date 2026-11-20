@@ -1151,43 +1151,9 @@ async fn drop_unanswered_duplicate(
     session_id: Uuid,
     outgoing: &str,
 ) {
-    let rows = match messages
-        .list_recent_messages_for_session(session_id, 2)
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            crate::logging::error(&format!("gui dedup read: {e}"));
-            return;
-        }
-    };
-    let Some(placeholder) = rows.last() else {
-        return;
-    };
-    if placeholder.role != "assistant" || !placeholder.content.trim().is_empty() {
-        return;
-    }
-    let Some(question) = rows.get(rows.len().saturating_sub(2)) else {
-        return;
-    };
-    if question.role != "user" {
-        return;
-    }
-    // The ledger keeps the redacted form of the text the turn was given.
-    let stored = opencrabs::utils::sanitize::redact_secrets(outgoing);
-    if question.content.trim() != stored.trim() {
-        return;
-    }
-    for row in [question, placeholder] {
-        if let Err(e) = messages.delete_message(row.id).await {
-            crate::logging::error(&format!("gui dedup delete: {e}"));
-            return;
-        }
-    }
-    crate::logging::info(&format!(
-        "gui dedup: dropped the unanswered pair a resend would have duplicated \
-         (session {session_id})"
-    ));
+    // The walk itself is shared so the remote relay cannot drift from it.
+    opencrabs::services::turn_dedup::drop_unanswered_duplicate(messages, session_id, outgoing)
+        .await;
 }
 
 /// Run one turn on a 4 MB thread: the TUI's `send_message_with_tools_and_mode`

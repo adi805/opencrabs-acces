@@ -1096,6 +1096,9 @@ pub(crate) fn compiled_features() -> Vec<&'static str> {
     if cfg!(feature = "gui") {
         out.push("gui");
     }
+    if cfg!(feature = "remote") {
+        out.push("remote");
+    }
     out
 }
 
