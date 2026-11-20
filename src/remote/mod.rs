@@ -7,11 +7,14 @@
 //! without a broker in the middle. Design reference:
 //! `research/remote-phase1-plan.md` in the OpenCrabs home.
 
+pub mod admission;
 pub mod pairing;
+pub mod registry;
 pub mod route_client;
 pub mod route_store;
 pub mod routes;
 pub mod scopes;
+pub mod seq;
 pub mod state_lock;
 pub mod tunnel;
 
