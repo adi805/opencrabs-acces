@@ -82,9 +82,8 @@ pub fn scope_for_method(method: &str) -> Option<&'static str> {
         "tasks/get" | "session/notify-status" => Some(SCOPE_READ),
         "message/send" | "message/stream" | "tasks/cancel" | "session/notify" => Some(SCOPE_SEND),
         "session/list" => Some(SCOPE_SESSION_LIST),
-        "session/history" | "session/attach" | "session/ack" | "session/presence" => {
-            Some(SCOPE_SESSION_READ)
-        }
+        "session/history" | "session/attach" | "session/ack" | "session/presence"
+        | "session/detach" => Some(SCOPE_SESSION_READ),
         "session/send" => Some(SCOPE_SESSION_SEND),
         "session/interrupt" | "session/approve" => Some(SCOPE_SESSION_CONTROL),
         "fs/list" | "fs/read" | "fs/write" => Some(SCOPE_FS_CLIENT),
