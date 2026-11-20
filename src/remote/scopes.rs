@@ -11,7 +11,7 @@
 //! | `session:read`      | `session/history`, `session/attach`, `session/ack`, `session/presence` |
 //! | `session:send`      | `session/send`                                                 |
 //! | `session:control`   | `session/interrupt`, `session/approve`                         |
-//! | `fs:client`         | `fs/list`, `fs/read`, `fs/write`                               |
+//! | `fs:client`         | `fs/list`, `fs/read`, `fs/write`, `fs/reply`                   |
 //! | `device:admin`      | `device/list`, `device/revoke`                                 |
 //! | `artifact:transfer` | `GET /a2a/v1/artifact/{id}`, `POST /a2a/v1/artifact`           |
 //!
@@ -86,7 +86,7 @@ pub fn scope_for_method(method: &str) -> Option<&'static str> {
         | "session/detach" => Some(SCOPE_SESSION_READ),
         "session/send" => Some(SCOPE_SESSION_SEND),
         "session/interrupt" | "session/approve" => Some(SCOPE_SESSION_CONTROL),
-        "fs/list" | "fs/read" | "fs/write" => Some(SCOPE_FS_CLIENT),
+        "fs/list" | "fs/read" | "fs/write" | "fs/reply" => Some(SCOPE_FS_CLIENT),
         "device/list" | "device/revoke" => Some(SCOPE_DEVICE_ADMIN),
         _ => None,
     }
