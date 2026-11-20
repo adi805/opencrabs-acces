@@ -10,6 +10,7 @@ use crate::a2a::{agent_card, handler, pairing_http, routes_http, types::*};
 use crate::brain::agent::service::AgentService;
 use crate::config::A2aConfig;
 use crate::remote::pairing::PairingStore;
+use crate::remote::relay::RelayState;
 use crate::remote::scopes::{ALL_SCOPES, allows, scope_for_method};
 use crate::services::ServiceContext;
 use axum::{
@@ -42,12 +43,23 @@ pub struct A2aState {
     /// Where remote state lives (host_id, tunnel.json, routes.json).
     /// Production: `<opencrabs_home>/state/remote`. Injected for tests.
     pub remote_state_dir: std::path::PathBuf,
+    /// The remote shared-session relay. `None` keeps the gateway exactly as
+    /// it was before the remote surface existed: every remote method answers
+    /// `METHOD_NOT_FOUND`, so turning the surface off is a construction
+    /// change rather than a code revert.
+    pub relay: Option<Arc<RelayState>>,
 }
 
 /// The scopes a request's credential carries, attached by `require_bearer`
 /// and enforced per method in `handle_jsonrpc`.
 #[derive(Clone, Debug)]
 pub struct GrantedScopes(pub Vec<String>);
+
+/// The pairing identity a request authenticated as, when it used a device
+/// token rather than the config api_key. `None` for the api_key and for the
+/// legacy loopback-open posture.
+#[derive(Clone, Debug)]
+pub struct GrantedDevice(pub Option<String>);
 
 fn all_scopes() -> Vec<String> {
     ALL_SCOPES.iter().map(|s| s.to_string()).collect()
@@ -90,6 +102,16 @@ async fn require_bearer(
         return unauthorized_response();
     };
     req.extensions_mut().insert(GrantedScopes(scopes));
+    // The device identity is only needed when the relay is on, and only a
+    // device token carries one, so this costs nothing on the legacy path.
+    let device = if state.relay.is_some() {
+        presented
+            .filter(|t| t.starts_with(crate::remote::pairing::TOKEN_PREFIX))
+            .and_then(|t| state.pairing.verify_token(t).map(|s| s.id))
+    } else {
+        None
+    };
+    req.extensions_mut().insert(GrantedDevice(device));
     next.run(req).await
 }
 
@@ -252,6 +274,16 @@ pub async fn start_server(
         }
     }
 
+    let pairing_store = PairingStore::new(PairingStore::default_path());
+    // The remote shared-session relay. Constructed here so the pairing store,
+    // agent service and DB pool the gateway already owns are the same ones the
+    // relay works through, never a second copy.
+    let relay = Some(Arc::new(crate::remote::relay::RelayState::new(
+        pairing_store.clone(),
+        service_context.clone(),
+        Arc::clone(&agent_service),
+    )));
+
     let state = A2aState {
         task_store,
         cancel_store: handler::new_cancel_store(),
@@ -260,9 +292,10 @@ pub async fn start_server(
         agent_service,
         service_context,
         api_key: config.api_key.clone(),
-        pairing: PairingStore::new(PairingStore::default_path()),
+        pairing: pairing_store,
         pair_hits: pairing_http::new_pair_hits(),
         remote_state_dir: crate::remote::tunnel::default_state_dir(),
+        relay,
     };
 
     // The reaper owns the same state dir the tunnel records into; capture it
@@ -329,6 +362,7 @@ async fn get_agent_card(State(state): State<A2aState>) -> Json<AgentCard> {
 async fn handle_jsonrpc(
     State(state): State<A2aState>,
     Extension(granted): Extension<GrantedScopes>,
+    Extension(device): Extension<GrantedDevice>,
     Json(req): Json<JsonRpcRequest>,
 ) -> axum::response::Response {
     // An authenticated call is the definition of "this tunnel is in use", and
@@ -370,6 +404,32 @@ async fn handle_jsonrpc(
         return handle_stream(state, req).await;
     }
 
+    // The remote shared-session surface. `session/attach` answers SSE, so it
+    // branches before the JSON dispatcher; everything else is one call.
+    if crate::remote::http::is_remote_method(&req.method) || req.method == "session/attach" {
+        let Some(relay) = state.relay.clone() else {
+            return (
+                StatusCode::OK,
+                Json(JsonRpcResponse::error(
+                    req.id,
+                    error_codes::METHOD_NOT_FOUND,
+                    format!("Method not found: {}", req.method),
+                )),
+            )
+                .into_response();
+        };
+        let device = device.0.clone();
+        if req.method == "session/attach" {
+            return handle_attach(relay, req, device).await;
+        }
+        if let Some(response) =
+            crate::remote::http::dispatch(relay, req.id, &req.method, req.params, device.as_deref())
+                .await
+        {
+            return (StatusCode::OK, Json(response)).into_response();
+        }
+    }
+
     let response = handler::dispatch(
         req,
         state.task_store,
@@ -406,6 +466,70 @@ async fn handle_stream(state: A2aState, req: JsonRpcRequest) -> axum::response::
         }
         Err(error_response) => (StatusCode::OK, Json(error_response)).into_response(),
     }
+}
+
+/// Handle `session/attach` -- returns an SSE stream of sequenced frames.
+///
+/// The first frames are whatever the client missed (from the ring buffer),
+/// then the live subscription continues. A `resume_from` older than the ring
+/// answers `RESUME_GAP` with `oldest_seq` so the client reloads history
+/// rather than silently skipping events.
+async fn handle_attach(
+    relay: Arc<crate::remote::relay::RelayState>,
+    req: JsonRpcRequest,
+    device: Option<String>,
+) -> axum::response::Response {
+    use crate::remote::errors::RemoteError;
+
+    let id = req.id.clone();
+    let session_id = match req
+        .params
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+    {
+        Some(v) => v,
+        None => {
+            let err = RemoteError::ValidationError {
+                field: "session_id".into(),
+                reason: "required uuid".into(),
+            };
+            return (StatusCode::OK, Json(err.to_response(id))).into_response();
+        }
+    };
+    let resume_from = req.params.get("resume_from").and_then(|v| v.as_u64());
+
+    if let Err(e) = crate::remote::session_api::ensure_session(&relay, session_id).await {
+        return (StatusCode::OK, Json(e.to_response(id))).into_response();
+    }
+
+    let device_id = device.unwrap_or_else(|| "anonymous".to_string());
+    let (replay, sub) = match relay.attach(session_id, resume_from, &device_id) {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::OK, Json(e.to_response(id))).into_response(),
+    };
+
+    let sse_stream = stream::unfold(
+        (replay.into_iter(), sub.rx),
+        |(mut replay, mut rx)| async move {
+            if let Some(frame) = replay.next() {
+                return Some((frame_event(&frame), (replay, rx)));
+            }
+            let frame = rx.recv().await?;
+            Some((frame_event(&frame), (replay, rx)))
+        },
+    );
+    Sse::new(sse_stream).into_response()
+}
+
+/// One sequence frame as an SSE event.
+fn frame_event(frame: &crate::remote::seq::Frame) -> sse::Event {
+    let body = serde_json::json!({
+        "seq": frame.seq,
+        "kind": frame.kind,
+        "payload": frame.payload,
+    });
+    sse::Event::default().data(body.to_string())
 }
 
 /// GET /a2a/health — Health check. Public; the optional `routes`/`host_id`
