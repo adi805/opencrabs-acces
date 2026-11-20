@@ -136,7 +136,7 @@ pub fn map_progress(event: &ProgressEvent) -> RelayEvent {
         // fails the build when a renderer skips it.
         ProgressEvent::SelfHealingAlert { message } => RelayEvent::new(
             "self_healing",
-            json!({ "message": crate::utils::sanitize::normalize_dashes(&message) }),
+            json!({ "message": crate::utils::sanitize::normalize_dashes(message) }),
         ),
         ProgressEvent::StripStreamedContent { bytes, reason } => {
             RelayEvent::new("text.strip", json!({ "bytes": bytes, "reason": reason }))
