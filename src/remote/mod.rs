@@ -8,13 +8,19 @@
 //! `research/remote-phase1-plan.md` in the OpenCrabs home.
 
 pub mod admission;
+pub mod device_api;
+pub mod errors;
+pub mod events;
+pub mod http;
 pub mod pairing;
 pub mod registry;
+pub mod relay;
 pub mod route_client;
 pub mod route_store;
 pub mod routes;
 pub mod scopes;
 pub mod seq;
+pub mod session_api;
 pub mod state_lock;
 pub mod tunnel;
 
