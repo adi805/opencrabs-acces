@@ -386,11 +386,14 @@ jobs:
     # cmake C++ + ~15 for the thin-LTO link of a 4-vCPU runner); warm runs
     # from rust-cache land near 10. The original 40 cap killed a build that
     # was minutes from linking. Keep a cap so a true hang can't burn 360.
-    # 90 (not 60) while the scoped-test step rides along: the cfg(test) lib
-    # compiles on top of the build. The job is NOT in the required gate, so
-    # the extra ceiling is a priced trade for the first-ever Windows
-    # execution receipts, not silent drift.
-    timeout-minutes: 90
+    # 90 self-hosted, 120 for fork PRs. Run 44730551686 measured the cold
+    # fork path: `Finished `ci` profile [optimized] target(s) in 78m 17s`
+    # at 13:40:20Z, then ~11 minutes of scoped tests before the 90-minute
+    # ceiling landed mid-step. A fork has no cache to inherit (rust-cache
+    # `save-if` is main-only), so 90 was structurally short for that path.
+    # The job is NOT in the required gate: this ceiling buys execution
+    # receipts and blocks nothing.
+    timeout-minutes: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 120 || 90 }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
@@ -661,15 +664,16 @@ jobs:
           done
           exit $status
 
-      # Fail fast from inside the job that failed (#2595): the fan-in `abort`
-      # job cannot do it, because `needs` holds it until the run is over.
-      - name: Cancel this run on failure
-        if: "always() && !success()"  # always() required: GitHub skips steps of a cancelled job
-        uses: ./.github/actions/cancel-run
-        with:
-          token: ${{ github.token }}
-          run-id: ${{ github.run_id }}
-
+      # NO `Cancel this run on failure` step here, deliberately.
+      #
+      # This job is NOT in the required gate (see its comment above), so it
+      # must never be able to cancel a run the gate depends on. It carried
+      # the shared fail-fast step, and its own timeout used it: run
+      # 44730551686 hit the 90-minute ceiling at 13:51:27Z, ran the cancel
+      # step at 13:51:36Z, and the REQUIRED `Test` leg -- 89 minutes into a
+      # cold compile with zero `test result:` lines -- was killed at
+      # 13:51:50Z. An advisory job that can kill a required one turns its
+      # own ceiling into the whole run's ceiling.
   # ── Windows footgun gate (static, cheap, blocks the merge) ─────────────
   # The only python step in this workflow, and deliberately not part of the
   # Windows build lane: it scans source text, so it costs seconds instead
