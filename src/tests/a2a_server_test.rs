@@ -22,6 +22,7 @@ async fn test_state() -> A2aState {
         pair_hits: crate::a2a::pairing_http::new_pair_hits(),
         remote_state_dir: std::env::temp_dir()
             .join(format!("oc-a2a-test-remote-{}", std::process::id())),
+        relay: None,
     }
 }
 
