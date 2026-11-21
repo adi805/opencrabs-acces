@@ -15,7 +15,7 @@ use crate::remote::scopes::{ALL_SCOPES, allows, scope_for_method};
 use crate::services::ServiceContext;
 use axum::{
     Extension, Router,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::StatusCode,
     middleware,
     response::{IntoResponse, Json, Sse, sse},
@@ -172,6 +172,7 @@ pub fn build_router(state: A2aState, allowed_origins: &[String]) -> Router {
     let protected = Router::new()
         .route("/a2a/v1", post(handle_jsonrpc))
         .route("/a2a/routes", get(routes_http::handle_routes))
+        .merge(artifact_routes())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer,
@@ -192,6 +193,32 @@ pub fn build_router(state: A2aState, allowed_origins: &[String]) -> Router {
         .merge(protected)
         .layer(cors)
         .with_state(state)
+}
+
+/// Artifact transfer routes: the only place in the gateway that moves raw
+/// bytes instead of JSON.
+///
+/// Both routes sit behind `require_bearer`, so `GrantedScopes` is always
+/// present and the handler can gate on `artifact:transfer`. The body limit is
+/// the artifact cap plus one chunk of slack, on purpose: axum answers a limit
+/// breach with a bare `413` and no body, which the client cannot tell apart
+/// from a proxy error. Letting the request through to the handler means an
+/// oversized upload comes back as a `RemoteError` carrying the cap it exceeded
+/// (`ARTIFACT_TOO_LARGE`), which is what AC-020 asserts.
+fn artifact_routes() -> Router<A2aState> {
+    let slack = 1024 * 1024;
+    let limit = crate::remote::artifact::configured_max_bytes().saturating_add(slack);
+    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    Router::new()
+        .route(
+            "/a2a/v1/artifact",
+            post(crate::remote::artifact::handle_upload),
+        )
+        .route(
+            "/a2a/v1/artifact/{id}",
+            get(crate::remote::artifact::handle_download),
+        )
+        .layer(DefaultBodyLimit::max(limit))
 }
 
 /// Refuse an a2a bind that would be an open, unauthenticated gate.

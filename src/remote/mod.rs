@@ -8,9 +8,11 @@
 //! `research/remote-phase1-plan.md` in the OpenCrabs home.
 
 pub mod admission;
+pub mod artifact;
 pub mod device_api;
 pub mod errors;
 pub mod events;
+pub mod fs_proxy;
 pub mod http;
 pub mod pairing;
 pub mod registry;
