@@ -422,11 +422,14 @@ pub fn pane_lines(
         ];
     }
     if expanded {
+        // Expanded, the card owns the pane's width, so the row's own
+        // `truncate()` is what cuts a title that genuinely overruns it. A hard
+        // 34-character cap here cut every title to the same width whether the
+        // card was wide or narrow, which is what a wide card full of `…`
+        // looked like while a dozen columns of empty space sat beside it.
+        let head = format!("{} · {done}/{total}", plan.title);
         let mut out = vec![
-            (
-                LineKind::Title,
-                format!("{} · {done}/{total}", fit(&plan.title, 32)),
-            ),
+            (LineKind::Title, head),
             (LineKind::Bar, format!("{bar} {percent}%")),
         ];
         let current = plan
@@ -441,7 +444,7 @@ pub fn pane_lines(
                 TaskStatus::Failed | TaskStatus::Blocked(_) => LineKind::Running,
                 TaskStatus::Pending => LineKind::Next,
             };
-            out.push((kind, format!("{}. {}", task.order, fit(&task.title, 34))));
+            out.push((kind, format!("{}. {}", task.order, task.title)));
         }
         return out;
     }
@@ -1093,6 +1096,27 @@ mod tests {
         );
         // The bar keeps its count whatever the titles do.
         assert!(lines[0].1.ends_with("33%"), "{:?}", lines[0]);
+    }
+
+    #[test]
+    fn an_expanded_card_shows_the_whole_title() {
+        // A wide card that cut every title at 34 characters left the reader
+        // with a column of `…` and empty space beside it. Expanded, the row's
+        // own `truncate()` cuts at the width the card actually has, so the
+        // lines handed to the view carry the titles whole.
+        let mut plan = plan_with(3, 1, Some(1));
+        plan.tasks[1].title = "verify the rerun script veto on a cancelled job".to_string();
+        let lines = pane_lines(&plan, PaneDensity::Tasks, true);
+        assert!(
+            lines.iter().any(|(_, line)| {
+                line.as_str() == "2. verify the rerun script veto on a cancelled job"
+            }),
+            "the running task keeps its title whole: {lines:?}"
+        );
+        assert!(
+            lines.iter().all(|(_, line)| !line.contains('…')),
+            "an expanded line is cut by the card's width, not by a char cap: {lines:?}"
+        );
     }
 
     #[test]
