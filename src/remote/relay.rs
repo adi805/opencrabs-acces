@@ -25,8 +25,10 @@ use crate::brain::agent::service::{
 };
 use crate::db::repository::SessionRepository;
 use crate::remote::admission::{ApprovalDecision, Approvals, QueuedTurn, TurnAdmission, TurnState};
+use crate::remote::artifact::ArtifactStore;
 use crate::remote::errors::RemoteError;
 use crate::remote::events::{self, map_progress};
+use crate::remote::fs_proxy::FsProxy;
 use crate::remote::pairing::PairingStore;
 use crate::remote::registry::{SessionRegistry, Subscription};
 use crate::remote::seq::{Frame, Replay, SeqStore};
@@ -75,6 +77,12 @@ pub struct RelayState {
     pub pairing: PairingStore,
     pub service: ServiceContext,
     pub agent: Arc<AgentService>,
+    /// Pending `fs.request` correlation for the `client:` namespace. One
+    /// proxy per relay: a request id is unique across every device, so a
+    /// reply can never resolve the wrong caller.
+    pub fs: Arc<FsProxy>,
+    /// Session artifact store the HTTP routes read and write.
+    pub artifacts: Arc<ArtifactStore>,
     cancels: Mutex<HashMap<Uuid, CancellationToken>>,
 }
 
@@ -98,8 +106,23 @@ impl RelayState {
             pairing,
             service,
             agent,
+            fs: Arc::new(FsProxy::new()),
+            artifacts: Arc::new(ArtifactStore::new(ArtifactStore::default_root())),
             cancels: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Replace the artifact store, for tests that must not write into the
+    /// profile's real `state/remote/artifacts`.
+    pub fn with_artifacts(mut self, artifacts: Arc<ArtifactStore>) -> Self {
+        self.artifacts = artifacts;
+        self
+    }
+
+    /// Replace the client-namespace proxy, for tests with a short deadline.
+    pub fn with_fs(mut self, fs: Arc<FsProxy>) -> Self {
+        self.fs = fs;
+        self
     }
 
     /// Wrap in an `Arc` for the callbacks and spawned turns.
