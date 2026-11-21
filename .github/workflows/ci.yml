@@ -321,16 +321,60 @@ jobs:
     # also lands here, since outputs.run stays empty.
     if: needs.windows-filter.outputs.run == 'true'
     runs-on: windows-latest
+    # thin-LTO is pure cost on this lane. The job builds, then runs a
+    # behaviour slice; nothing here ships, so the ~15-minute thin-LTO link
+    # buys zero and the scoped-test compile pays it a second time. This is
+    # the same one-line override that took the Test job from 36m29s of
+    # compile (preempted before the suite ever ran) to a green 88s suite,
+    # applied to the last job still paying it.
+    #
+    # LTO off un-covers a CRT mismatch the thin-LTO link never pulled in:
+    # esaxx-rs 0.1.10's build.rs hardcodes `.static_crt(true)`, so its one
+    # object is compiled /MT while every other object in this link is /MD —
+    # Rust's own std and llama-cpp-sys-2's cmake output (cmake-rs injects
+    # -MD). The 2026-11-21 run 44740542048 failed with exactly that pair:
+    #   libllama_cpp_sys_2.rlib(llama.cpp.obj): LNK2038 RuntimeLibrary
+    #   'MD_DynamicRelease' doesn't match 'MT_StaticRelease' in libesaxx_rs
+    # on 24 llama objects at once. The -MT recipe documented on the Build
+    # step below cannot fix it as-is: it assumes a crt-static build, and
+    # without `+crt-static` making llama /MT only moves the mismatch onto
+    # Rust's own /MD objects.
+    #
+    # CXXFLAGS is the lever that reaches esaxx without touching anything
+    # else. cc-rs pushes its own flags first (add_default_flags emits -MT at
+    # cc 1.4.4 src/lib.rs:2166, called from :2044) and appends the env flags
+    # last (:2124-2128, via Tool::push_cc_arg = plain args.push), so the env
+    # the later flag and cl.exe takes the last one (D9025 warning only).
+    # Job-level, not step-level: cc emits cargo:rerun-if-env-changed=CXXFLAGS
+    # (src/lib.rs:4183), so the scoped-test step would otherwise rerun the
+    # esaxx build script with the variable gone and link /MT again.
+    env:
+      CARGO_PROFILE_CI_LTO: "false"
+      # -MD, not /MD: the MSYS2 runtime in Git Bash path-converts env var
+      # values that look like POSIX paths, so "/MD" arrived at the build
+      # script as "C:/Program Files/Git/MD" (run 44885484076: cc printed
+      # `CXXFLAGS = Some(C:/Program Files/Git/MD)` and cl warned D9024
+      # "unrecognized source file type 'C:/Program'"). A leading dash is
+      # not a path, so it survives untouched. MSYS2_ENV_CONV_EXCL is belt
+      # and braces in case the slash form ever comes back.
+      MSYS2_ENV_CONV_EXCL: "CXXFLAGS"
+      CXXFLAGS: "-MD"
     # 60 min: a COLD windows-latest run needs ~48 (33 compile incl. llama's
     # cmake C++ + ~15 for the thin-LTO link of a 4-vCPU runner); warm runs
     # from rust-cache land near 10. The original 40 cap killed a build that
     # was minutes from linking. Keep a cap so a true hang can't burn 360.
-    # 90 (not 60) while the scoped-test step rides along: the cfg(test) lib
-    # compiles on top of the build. The cap must cover a cold run, because
-    # this job IS in the required gate (see ci-gate's `needs`): when the
-    # windows-filter matches, a timeout here fails the PR rather than
-    # scrolling by as advisory.
-    timeout-minutes: 90
+    # 150 while the scoped-test step rides along. The 90 that used to be here
+    # was arithmetically unsatisfiable on a cold run: Build alone took 32-40
+    # minutes (39m36s on the M1 run) and the scoped-test step must then
+    # compile the entire cfg(test) dev-dependency tree before a single test
+    # executes. Run 44887271123 attempt 1 was cancelled at 92m14s with zero
+    # tests run. 150 = 45 build + 50 warm-up + 30 test-phase ceiling + post
+    # steps, so the cap still catches a true hang but no longer pre-empts the
+    # step-level deadline whose whole job is to name the wedged module. The
+    # cap must cover a cold run, because this job IS in the required gate
+    # (see ci-gate's `needs`): when the windows-filter matches, a timeout here
+    # fails the PR rather than scrolling by as advisory.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
@@ -478,6 +522,27 @@ jobs:
       # advisory. `--all-features` below matches the build step, so the test
       # harness compiles against the feature set the binary was built with
       # rather than a narrower default one.
+      # Compile the test harness ONCE, outside the per-module clock.
+      # The slice below wraps each `cargo test` in `timeout 600` to catch a
+      # HANGING TEST, but `cargo test` compiles before it runs. On a cold
+      # target dir the first slice spent its entire budget in rustc and was
+      # killed mid-compile (run 44887271123 attempt 1: "Windows slice TIMEOUT
+      # after 600s (rc=124): tests::winlock_test", the captured output a wall
+      # of `Compiling ...`), then every following slice re-paid the same bill
+      # until the job cap ended the lane with zero tests executed. Warming
+      # here means the 600s clock measures test runtime, which is the only
+      # thing it was ever written to measure.
+      - name: "Warm the test harness (compile only)"
+        shell: bash
+        # Generous: a cold --all-features lib harness pulls every channel
+        # dependency (serenity, teloxide, slack-morphism, whatsapp-rust,
+        # grammers-client, rwhisper) plus the criterion/mockall/insta/proptest
+        # dev tree. This is the step that is allowed to be slow; the slices
+        # below are the ones that must be fast.
+        timeout-minutes: 50
+        run: |
+          cargo test --locked --profile ci --target x86_64-pc-windows-msvc \
+            --all-features --lib --no-run
       - name: "Scoped tests (windows): platform-behaviour slice"
         shell: bash
         run: |
@@ -494,19 +559,48 @@ jobs:
           # cargo writes "test result: FAILED. N passed" on failure, so
           # parsing $out must not assume the ok-form.
           status=0
+          # Per-module wall clock. The slice is captured into $out, so a HANG
+          # prints nothing whatsoever: the 2026-11-20 run sat on this step for
+          # 37m51s with zero output and only ended when the job's
+          # `timeout-minutes: 90` fired, burning the whole lane without ever
+          # naming the module that wedged. `timeout` ships with Git for
+          # Windows, so a stuck module now costs this budget and reports
+          # itself instead of taking the job down with it.
+          slice_timeout=600
+          # A per-module budget alone cannot save the job: ten modules times
+          # 600s is 100 minutes. This ceiling fails the step at 30 minutes
+          # instead, naming the module it was about to run. 3900 (65 min) used
+          # to be here and could never fire: it counted from the STEP start,
+          # which already sits 32-40 minutes into a 90-minute job cap, so the
+          # cap always won and the failure was a bare "operation was canceled"
+          # with nothing named. Run 44887271123 attempt 1 proved it - cap at
+          # 10:32:45Z, deadline due 10:40:21Z. With the compile moved into the
+          # warm-up step above, 30 minutes covers ten fast slices plus two full
+          # 600s hangs, and it is reachable well inside the 150-minute cap.
+          slice_deadline=$(( $(date +%s) + 1800 ))
           for m in tests::winlock_test tests::service_windows_test tests::utils_shell_test \
                    tests::utils_cwd_test tests::browser_default_windows_test \
                    tests::profile_test tests::desktop_windows_test \
                    tests::desktop_capture_test tests::desktop_input_test \
                    tests::desktop_input_posted_test; do
+            if [ "$(date +%s)" -ge "$slice_deadline" ]; then
+              echo "::error::Windows slice DEADLINE exceeded before running: $m"
+              status=1
+              break
+            fi
             set +e
-            out=$(cargo test --locked --profile ci --target x86_64-pc-windows-msvc \
+            out=$(timeout --kill-after=30 "$slice_timeout" \
+                    cargo test --locked --profile ci --target x86_64-pc-windows-msvc \
                     --all-features --lib -- "$m" 2>&1)
             rc=$?
             set -e
             n=$(printf '%s\n' "$out" | sed -n 's/^test result: [a-z]*\. \([0-9]*\) passed.*/\1/p' | head -n1)
             failed=$(printf '%s\n' "$out" | sed -n 's/.*; \([0-9]*\) failed.*/\1/p' | head -n1)
-            if [ $rc -ne 0 ]; then
+            if [ $rc -eq 124 ] || [ $rc -eq 137 ]; then
+              echo "::error::Windows slice TIMEOUT after ${slice_timeout}s (rc=$rc): $m"
+              printf '%s\n' "$out" | tail -40
+              status=1
+            elif [ $rc -ne 0 ]; then
               echo "::warning::Windows slice FAILS (rc=$rc, failed=${failed:-?}): $m"
               # The whole slice output, not a tail. With RUST_BACKTRACE=1 the
               # panic message, which is where the assertion text lives, sits far
@@ -718,6 +812,24 @@ jobs:
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+          # Thin LTO is the reason this leg dies before it runs a test.
+          # `[profile.ci]` inherits `release`, which sets `lto = "thin"`, so
+          # every dependency AND this crate get LTO'd: 825 `Compiling` lines
+          # before the suite starts. Before the v0.5.14 merge that fit on a
+          # hosted runner (run 76f695018: Test 14:35:22Z to 14:55:35Z, suite
+          # included). After it the crate is tens of thousands of lines
+          # bigger and the job stops fitting: run 44627855229 attempt 6 ran
+          # 00:13:36Z to 00:34:17Z, spent its last six minutes inside the
+          # single `rustc --crate-name opencrabs src/lib.rs` invocation (the
+          # LTO phase), then received SIGTERM with zero `test result:` lines
+          # in the log. Nothing about the tests was ever exercised.
+          #
+          # Disabling LTO here removes the memory-heavy phase from a leg that
+          # only runs a test binary, and leaves lint, coverage and every build
+          # job on the profile they were tuned for. If this still overruns,
+          # the next lever is fewer features on this leg, not a longer timeout:
+          # the job never hits its own 90 minute cap.
+          CARGO_PROFILE_CI_LTO: "false"
         # #1936: the suite can freeze with every test-thread slot blocked;
         # before, the job just burned timeout-minutes and died with no
         # verdict. The wrapper detects the silence, dumps thread stacks of
