@@ -106,14 +106,16 @@ fetch_log() {
 }
 
 # Fetch a job's check-run annotations as one message per line. The job payload
-# carries check_run_url, so the id is taken from there instead of assuming the
-# check run and the job share an id.
+# carries check_run_url, which points at the check run itself: the annotations
+# live one segment further, so the suffix is appended here. Getting that wrong
+# is not silent: `.[]` on a check-run object walks its values and jq fails with
+# "expected an object but got: string".
 fetch_annotations() {
     local url="$1"
     [ -n "$url" ] || return 0
     local path="${url#https://api.github.com/}"
     [ "$path" != "$url" ] || return 0
-    gh api "$path" --paginate --jq '.[] | .message'
+    gh api "$path/annotations" --paginate --jq '.[] | .message'
 }
 
 run_json=$(gh api "repos/$REPO/actions/runs/$RUN_ID" 2>/dev/null) || {
