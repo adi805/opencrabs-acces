@@ -343,14 +343,22 @@ jobs:
     # CXXFLAGS is the lever that reaches esaxx without touching anything
     # else. cc-rs pushes its own flags first (add_default_flags emits -MT at
     # cc 1.4.4 src/lib.rs:2166, called from :2044) and appends the env flags
-    # last (:2124-2128, via Tool::push_cc_arg = plain args.push), so /MD is
+    # last (:2124-2128, via Tool::push_cc_arg = plain args.push), so the env
     # the later flag and cl.exe takes the last one (D9025 warning only).
     # Job-level, not step-level: cc emits cargo:rerun-if-env-changed=CXXFLAGS
     # (src/lib.rs:4183), so the scoped-test step would otherwise rerun the
     # esaxx build script with the variable gone and link /MT again.
     env:
       CARGO_PROFILE_CI_LTO: "false"
-      CXXFLAGS: "/MD"
+      # -MD, not /MD: the MSYS2 runtime in Git Bash path-converts env var
+      # values that look like POSIX paths, so "/MD" arrived at the build
+      # script as "C:/Program Files/Git/MD" (run 44885484076: cc printed
+      # `CXXFLAGS = Some(C:/Program Files/Git/MD)` and cl warned D9024
+      # "unrecognized source file type 'C:/Program'"). A leading dash is
+      # not a path, so it survives untouched. MSYS2_ENV_CONV_EXCL is belt
+      # and braces in case the slash form ever comes back.
+      MSYS2_ENV_CONV_EXCL: "CXXFLAGS"
+      CXXFLAGS: "-MD"
     # 60 min: a COLD windows-latest run needs ~48 (33 compile incl. llama's
     # cmake C++ + ~15 for the thin-LTO link of a 4-vCPU runner); warm runs
     # from rust-cache land near 10. The original 40 cap killed a build that
