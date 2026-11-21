@@ -327,8 +327,30 @@ jobs:
     # the same one-line override that took the Test job from 36m29s of
     # compile (preempted before the suite ever ran) to a green 88s suite,
     # applied to the last job still paying it.
+    #
+    # LTO off un-covers a CRT mismatch the thin-LTO link never pulled in:
+    # esaxx-rs 0.1.10's build.rs hardcodes `.static_crt(true)`, so its one
+    # object is compiled /MT while every other object in this link is /MD —
+    # Rust's own std and llama-cpp-sys-2's cmake output (cmake-rs injects
+    # -MD). The 2026-11-21 run 44740542048 failed with exactly that pair:
+    #   libllama_cpp_sys_2.rlib(llama.cpp.obj): LNK2038 RuntimeLibrary
+    #   'MD_DynamicRelease' doesn't match 'MT_StaticRelease' in libesaxx_rs
+    # on 24 llama objects at once. The -MT recipe documented on the Build
+    # step below cannot fix it as-is: it assumes a crt-static build, and
+    # without `+crt-static` making llama /MT only moves the mismatch onto
+    # Rust's own /MD objects.
+    #
+    # CXXFLAGS is the lever that reaches esaxx without touching anything
+    # else. cc-rs pushes its own flags first (add_default_flags emits -MT at
+    # cc 1.4.4 src/lib.rs:2166, called from :2044) and appends the env flags
+    # last (:2124-2128, via Tool::push_cc_arg = plain args.push), so /MD is
+    # the later flag and cl.exe takes the last one (D9025 warning only).
+    # Job-level, not step-level: cc emits cargo:rerun-if-env-changed=CXXFLAGS
+    # (src/lib.rs:4183), so the scoped-test step would otherwise rerun the
+    # esaxx build script with the variable gone and link /MT again.
     env:
       CARGO_PROFILE_CI_LTO: "false"
+      CXXFLAGS: "/MD"
     # 60 min: a COLD windows-latest run needs ~48 (33 compile incl. llama's
     # cmake C++ + ~15 for the thin-LTO link of a 4-vCPU runner); warm runs
     # from rust-cache land near 10. The original 40 cap killed a build that
