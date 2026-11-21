@@ -49,6 +49,10 @@ on:
 permissions:
   actions: write
   contents: read
+  # Reading a cancelled job's cause needs its check-run annotations: the job
+  # log is HTTP 404 for a cancelled job. Without checks:read the script would
+  # see an empty annotation and veto every rerun it was written to make.
+  checks: read
 
 # One repair per run at a time. Never cancel: a half-sent rerun request is
 # worse than a queued one, and rerunning is cheap next to a full CI cycle.
