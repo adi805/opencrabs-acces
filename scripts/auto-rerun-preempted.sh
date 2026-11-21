@@ -113,7 +113,7 @@ fetch_annotations() {
     [ -n "$url" ] || return 0
     local path="${url#https://api.github.com/}"
     [ "$path" != "$url" ] || return 0
-    gh api "$path" --paginate --jq '.[] | .message' 2>/dev/null
+    gh api "$path" --paginate --jq '.[] | .message'
 }
 
 run_json=$(gh api "repos/$REPO/actions/runs/$RUN_ID" 2>/dev/null) || {
@@ -182,13 +182,24 @@ while IFS=$'\t' read -r job_id job_conclusion job_check_run job_name; do
 
     if [ "$job_conclusion" = "cancelled" ]; then
         # The log is 404 for a cancelled job, so the annotation is the evidence.
-        annotations=$(fetch_annotations "$job_check_run")
-        if [ -z "$annotations" ]; then
-            # No annotation is not the same as "nothing wrong". Rerunning blind
-            # could paper over a real failure, so stop and say so.
-            log "STOP: cancelled job '$job_name' ($job_id) has no readable annotation; not rerunning blind"
+        if [ -z "$job_check_run" ]; then
+            log "STOP: cancelled job '$job_name' ($job_id) carries no check_run_url; not rerunning blind"
             exit 0
         fi
+        ann_err=$(mktemp)
+        annotations=$(fetch_annotations "$job_check_run" 2>"$ann_err")
+        if [ -z "$annotations" ]; then
+            # No annotation is not the same as "nothing wrong". Rerunning blind
+            # could paper over a real failure, so stop and say why.
+            if [ -s "$ann_err" ]; then
+                log "STOP: cancelled job '$job_name' ($job_id) annotation fetch failed: $(head -n 1 "$ann_err")"
+            else
+                log "STOP: cancelled job '$job_name' ($job_id) has no readable annotation; not rerunning blind"
+            fi
+            rm -f "$ann_err"
+            exit 0
+        fi
+        rm -f "$ann_err"
         if printf '%s' "$annotations" | grep -Fq "$SUPERSEDE_MARKERS"; then
             log "  superseded: '$job_name' ($job_id) was cancelled by a newer run"
             superseded=$((superseded + 1))
