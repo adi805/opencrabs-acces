@@ -25,6 +25,27 @@ fn plan_with(tasks: usize, done: usize, running: Option<usize>) -> PlanDocument 
     plan
 }
 
+#[test]
+fn an_expanded_card_shows_the_whole_title() {
+    // A wide card that cut every title at 34 characters left the reader
+    // with a column of `…` and empty space beside it. Expanded, the row's
+    // own `truncate()` cuts at the width the card actually has, so the
+    // lines handed to the view carry the titles whole.
+    let mut plan = plan_with(3, 1, Some(1));
+    plan.tasks[1].title = "verify the rerun script veto on a cancelled job".to_string();
+    let lines = pane_lines(&plan, PaneDensity::Tasks, true);
+    assert!(
+        lines.iter().any(|(_, line)| {
+            line.as_str() == "2. verify the rerun script veto on a cancelled job"
+        }),
+        "the running task keeps its title whole: {lines:?}"
+    );
+    assert!(
+        lines.iter().all(|(_, line)| !line.contains('…')),
+        "an expanded line is cut by the card's width, not by a char cap: {lines:?}"
+    );
+}
+
 /// #2691: the GUI had no chime call site at all, so the notification the
 /// terminal rings was silence in the window. The window's pass reads the
 /// strips through `document()` and dedupes with one shared seen set. This

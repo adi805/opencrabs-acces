@@ -182,11 +182,19 @@ async fn oversized_rejected_clean() {
     // swallowed the request before the handler ever saw it.
     let cap = crate::remote::artifact::configured_max_bytes();
     let (state, store, root) = state_with_store(None).await;
-    assert_eq!(store.max_bytes(), cap, "the store honours the configured cap");
+    assert_eq!(
+        store.max_bytes(),
+        cap,
+        "the store honours the configured cap"
+    );
     let payload = vec![7u8; (cap + 1) as usize];
 
     let (status, body) = upload(&state, payload, None, None).await;
-    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "413 on oversize: {body}");
+    assert_eq!(
+        status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "413 on oversize: {body}"
+    );
     assert_eq!(
         body["error"]["code"],
         json!(RPC_ARTIFACT_TOO_LARGE),
@@ -216,7 +224,11 @@ async fn a_configured_cap_is_the_one_reported() {
     let cap = 1024u64;
     let (state, _store, _root) = state_with_store(Some(cap)).await;
     let (status, body) = upload(&state, vec![7u8; 2048], None, None).await;
-    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "413 on oversize: {body}");
+    assert_eq!(
+        status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "413 on oversize: {body}"
+    );
     assert_eq!(body["error"]["data"]["code"], json!("ARTIFACT_TOO_LARGE"));
     assert_eq!(
         body["error"]["data"]["max_bytes"],
@@ -253,7 +265,10 @@ async fn a_body_that_does_not_match_its_digest_is_refused() {
     // The temp file is gone with the refusal: nothing is stored and nothing
     // half-stored is left for a later reader to find.
     assert!(
-        !store.root().exists() || std::fs::read_dir(&root).map(|d| d.count() == 0).unwrap_or(true),
+        !store.root().exists()
+            || std::fs::read_dir(&root)
+                .map(|d| d.count() == 0)
+                .unwrap_or(true),
         "a mismatched upload leaves nothing in the store"
     );
 }

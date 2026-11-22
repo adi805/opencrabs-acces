@@ -126,7 +126,9 @@ impl ArtifactStore {
     }
 
     fn blob_path(&self, session_id: Uuid, id: Uuid) -> PathBuf {
-        self.root.join(session_id.to_string()).join(format!("{id}.bin"))
+        self.root
+            .join(session_id.to_string())
+            .join(format!("{id}.bin"))
     }
 
     fn temp_path(&self, id: Uuid) -> PathBuf {
@@ -236,7 +238,8 @@ impl ArtifactStore {
                 RemoteError::internal(format!("artifact meta: {e}"))
             }
         })?;
-        serde_json::from_slice(&raw).map_err(|e| RemoteError::internal(format!("artifact meta: {e}")))
+        serde_json::from_slice(&raw)
+            .map_err(|e| RemoteError::internal(format!("artifact meta: {e}")))
     }
 
     /// The artifact's bytes, verified against the recorded sha256.
@@ -382,10 +385,7 @@ pub async fn handle_download(
                 header::HeaderValue::from_static("application/octet-stream"),
             );
             if let Ok(value) = header::HeaderValue::from_str(&meta.sha256) {
-                headers.insert(
-                    header::HeaderName::from_static(SHA256_HEADER),
-                    value,
-                );
+                headers.insert(header::HeaderName::from_static(SHA256_HEADER), value);
             }
             (StatusCode::OK, headers, bytes).into_response()
         }
@@ -433,11 +433,7 @@ pub async fn handle_upload(
         .artifacts
         .put_bytes(session_id, id, declared.as_deref(), &body)
     {
-        Ok(meta) => (
-            StatusCode::CREATED,
-            axum::Json(artifact_json(&meta)),
-        )
-            .into_response(),
+        Ok(meta) => (StatusCode::CREATED, axum::Json(artifact_json(&meta))).into_response(),
         Err(e) => (status_of(&e), axum::Json(e.to_response(json!(null)))).into_response(),
     }
 }
@@ -448,7 +444,11 @@ fn status_of(err: &RemoteError) -> StatusCode {
 
 fn not_found(id: Uuid) -> Response {
     let err = RemoteError::ArtifactNotFound { id };
-    (StatusCode::NOT_FOUND, axum::Json(err.to_response(json!(null)))).into_response()
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(err.to_response(json!(null))),
+    )
+        .into_response()
 }
 
 #[cfg(test)]

@@ -442,10 +442,18 @@ impl Dashboard {
         // An expanded strip takes room from the transcript under it, and a
         // viewport that shrinks must not leave the newest row clipped while
         // the reader believes they are at the bottom (#2685, #2624).
+        //
+        // Arming alone was not enough: `rearm` only sets the flag the next
+        // follow pass reads, and a click on the strip is not a follow pass. So
+        // the card grew, the viewport shrank, and the newest row stayed half
+        // cut under the card until something else happened to scroll the
+        // transcript. The two doors below rearm AND land on the newest row,
+        // which is what the click promises, and the pane door notifies the
+        // cached leaf so its next prepaint actually reads the new offset.
         if Some(session) == self.chat_session {
-            self.chat_state.follow.rearm();
-        } else if let Some(pane) = self.pane_states.get(&session) {
-            pane.update(cx, |pane, _| pane.follow.rearm());
+            self.rearm_transcript_follow();
+        } else {
+            self.rearm_pane_follow(session, cx);
         }
         cx.notify();
     }

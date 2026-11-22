@@ -39,6 +39,19 @@ pub use factory::{ChannelFactory, configure_cron_factory};
 pub use greeting::generate_connection_greeting;
 pub use manager::ChannelManager;
 
+/// Canonical Telegram thread id of a forum group's built-in General topic.
+///
+/// General messages carry NO explicit `message_thread_id` and are not flagged
+/// `is_topic_message`, which historically made them indistinguishable from
+/// DMs / non-forum groups (#1220).
+///
+/// Lives HERE, not in `channels::telegram`, because it is a property of the
+/// wire format rather than of the Telegram feature: `channels::target_resolver`
+/// and `brain::tools::r#trait` both key on it while compiled with
+/// `--no-default-features`. Keeping the definition inside the feature-gated
+/// module made every such caller a hard compile error (#3095).
+pub const GENERAL_TOPIC_ID: i32 = 1;
+
 /// Root of the durable channel-attachment store, profile-resolved via
 /// `opencrabs_home()` so a named-profile instance stores under its OWN home
 /// (`~/.opencrabs/profiles/<name>/channel_attachments/`) rather than the shared

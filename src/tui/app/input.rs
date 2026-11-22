@@ -1078,7 +1078,11 @@ impl App {
     // platform being compiled it reads as the tail, hence the allow.
     #[allow(clippy::needless_return)]
     fn read_clipboard_text() -> Option<String> {
-        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+        // `any(unix, windows)`, not a macos/linux/windows enumeration: the
+        // `#[cfg(unix)]` block below also compiles on Android (and iOS), where
+        // the enumeration left `Command` undeclared — E0433 on
+        // aarch64-linux-android.
+        #[cfg(any(unix, windows))]
         use std::process::Command;
 
         // One table for every unix backend (#2702): `pbpaste` on macOS, then

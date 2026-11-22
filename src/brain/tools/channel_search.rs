@@ -11,12 +11,12 @@ use chrono::DateTime;
 use serde_json::Value;
 
 /// Is this thread id the General-topic SESSION-SCOPING sentinel (#1220)?
-/// Telegram-only: `channel_search` is built on every feature set, but the
-/// constant lives behind the `telegram` feature, and no other channel
-/// produces a forum thread at all.
+/// Telegram-only in practice: no other channel produces a forum thread. The
+/// constant itself is ungated (`channels::GENERAL_TOPIC_ID`), so the path below
+/// stays valid on every feature set.
 #[cfg(feature = "telegram")]
 fn is_general_topic(thread: i32) -> bool {
-    thread == crate::channels::telegram::session_resolve::GENERAL_TOPIC_ID
+    thread == crate::channels::GENERAL_TOPIC_ID
 }
 
 #[cfg(not(feature = "telegram"))]

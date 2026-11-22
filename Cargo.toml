@@ -20,6 +20,13 @@ readme = "README.md"
 # the packaged crate on every push, so the next release cannot discover the
 # ceiling the way this one did.
 exclude = [
+    # The Android shell (Java sources, resources, its own bundled fonts) is
+    # 2.0 MB of the repository that `cargo publish` has no use for: the APK is
+    # assembled in `android-artifact.yml` from a checkout, never from the
+    # published crate, and `build.rs` reads nothing under `android/`. Shipping
+    # it pushed the crate 754,575 bytes past the crates.io ceiling and turned
+    # Lint red on the commit that added it.
+    "android/**",
     # The test suite is 2.7 MiB compressed on its own. `src/lib.rs` gates it
     # behind `#[cfg(test)]`, so a plain build never reads it.
     "src/tests/**",
@@ -332,6 +339,15 @@ gpui = { version = "0.2.2", default-features = false, features = ["runtime_shade
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winresource = "0.1"
+
+# Android: the NDK ships no libssl/libcrypto, and reqwest's `native-tls` feature
+# (see the reqwest entry above) pulls native-tls -> openssl-sys, whose build
+# script otherwise looks for an OpenSSL installation the NDK does not provide.
+# The `vendored` feature builds OpenSSL from source with the NDK toolchain.
+# Scoped to this target on purpose: every other platform keeps linking whatever
+# OpenSSL it already resolved, so nothing off Android changes.
+[target.'cfg(target_os = "android")'.dependencies]
+openssl-sys = { version = "0.9", features = ["vendored"] }
 
 [features]
 # `local-stt` stays in the default set on purpose: running voice fully

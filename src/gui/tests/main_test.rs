@@ -1876,6 +1876,32 @@ fn begin_split_targets_the_focused_leaf() {
 }
 
 #[test]
+fn expanding_the_plan_strip_lands_on_the_newest_row() {
+    // #2685, #2624: the click grew the card and shrank the transcript under
+    // it, but the toggle only armed the follow, and arming is not a follow
+    // pass. The newest row stayed half cut beneath the card until something
+    // else scrolled. The toggle goes through the same two doors as every other
+    // rearm, and those also land on the bottom.
+    let body = DASHBOARD
+        .split("pub(crate) fn toggle_pane_plan(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n    }\n").next())
+        .expect("the toggle body");
+    assert!(
+        body.contains("self.rearm_transcript_follow()"),
+        "the chat leaf lands on its newest row"
+    );
+    assert!(
+        body.contains("self.rearm_pane_follow(session, cx)"),
+        "a split pane lands on its newest row"
+    );
+    assert!(
+        !body.contains(".follow.rearm()"),
+        "arming without scrolling is the bug this test exists for"
+    );
+}
+
+#[test]
 fn a_split_pane_draws_the_plans_density_shape() {
     // #2622, #2624: a pane is a fraction of the window, so its plan is
     // the density shape (`plan_strip::pane_view`), never the six-row
