@@ -57,6 +57,17 @@ public class ITermImage {
     protected boolean mPreserveAspectRatio = true;
 
     protected final StringBuilder mEncodedImage = new StringBuilder(/* Initial capacity. */ 4096);
+    /**
+     * Ceiling on the base64 text one image may accumulate, checked BEFORE an append.
+     *
+     * <p>The OSC parser limits how big a single command may be, but nothing limited
+     * the total: a stream of {@code FilePart} commands kept appending to
+     * {@link #mEncodedImage} until the heap was gone. Catching OutOfMemoryError is
+     * not a fix, because by then the app is already unresponsive; the cap has to
+     * refuse the append that would cross it. 8 MiB of base64 is 6 MiB of image,
+     * well past any screenshot this terminal is asked to render.
+     */
+    protected static final int MAX_ENCODED_IMAGE_CHARS = 8 * 1024 * 1024;
     protected byte[] mDecodedImage;
 
     /** The current state of the {@link ImageState}. */
@@ -296,12 +307,8 @@ public class ITermImage {
                     setState(ImageState.IMAGE_READING);
                     int imageStartIndex = colonIndex + 1;
 
-                    try {
-                        // Appending can cause an increase in capacity and cause an OOM.
-                        mEncodedImage.append(oscArgs.substring(imageStartIndex));
-                    } catch (Throwable t) {
-                        if (t instanceof OutOfMemoryError) System.gc();
-                        setStateFailed("Collecting singlepart image" + " in osc argument string failed: " + t.getMessage());
+                    if (!appendEncoded(oscArgs.substring(imageStartIndex),
+                            "Collecting singlepart image")) {
                         return false;
                     }
 
@@ -322,18 +329,46 @@ public class ITermImage {
             setState(ImageState.IMAGE_READING);
 
             if (index < oscArgs.length()) {
-                try {
-                    // Appending can cause an increase in capacity and cause an OOM.
-                    mEncodedImage.append(oscArgs.substring(index));
-                } catch (Throwable t) {
-                    if (t instanceof OutOfMemoryError) System.gc();
-                    setStateFailed("Collecting multipart image" + " in osc argument string failed: " + t.getMessage());
+                if (!appendEncoded(oscArgs.substring(index), "Collecting multipart image")) {
                     return false;
                 }
                 return true;
             }
 
             setStateFailed("Failed to read multipart image" + " in osc argument string: " + oscArgs);
+            return false;
+        }
+    }
+
+    /**
+     * Append one chunk of base64 text, refusing the chunk that would cross the cap.
+     *
+     * <p>Guarding the append rather than the catch: an OutOfMemoryError arrives after
+     * the heap is already gone, and this process is the terminal the user is looking
+     * at. A chunk that would exceed {@link #MAX_ENCODED_IMAGE_CHARS} discards what
+     * was collected and fails the image, so the next command starts from empty.
+     *
+     * @return false when the image was discarded, in which case the state is already
+     *         {@link ImageState#FAILED}
+     */
+    private boolean appendEncoded(String chunk, String what) {
+        if (chunk == null || chunk.isEmpty()) {
+            return true;
+        }
+        if (mEncodedImage.length() + chunk.length() > MAX_ENCODED_IMAGE_CHARS) {
+            mEncodedImage.setLength(0);
+            mEncodedImage.trimToSize();
+            setStateFailed(what + " exceeds " + MAX_ENCODED_IMAGE_CHARS
+                + " base64 characters, image discarded");
+            return false;
+        }
+        try {
+            mEncodedImage.append(chunk);
+            return true;
+        } catch (Throwable t) {
+            if (t instanceof OutOfMemoryError) System.gc();
+            mEncodedImage.setLength(0);
+            setStateFailed(what + " in osc argument string failed: " + t.getMessage());
             return false;
         }
     }

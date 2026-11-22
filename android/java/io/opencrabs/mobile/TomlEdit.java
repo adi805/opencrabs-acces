@@ -95,9 +95,7 @@ final class TomlEdit {
         }
 
         for (int i = headerIndex + 1; i < sectionEnd; i++) {
-            String trimmed = lines.get(i).trim();
-            if (trimmed.startsWith(key) && trimmed.length() > key.length()
-                && (trimmed.charAt(key.length()) == '=' || trimmed.charAt(key.length()) == ' ')) {
+            if (assignsKey(lines.get(i), key)) {
                 lines.set(i, assignment);
                 return join(lines);
             }
@@ -105,6 +103,27 @@ final class TomlEdit {
 
         lines.add(headerIndex + 1, assignment);
         return join(lines);
+    }
+
+    /**
+     * True when {@code line} assigns {@code key}.
+     *
+     * <p>Whitespace before {@code =} may be any mix of spaces and tabs, because
+     * TOML allows both: {@code default_model\t= "old"} is a valid assignment.
+     * Recognising only a space or an immediate '=' missed the tab form, so saving
+     * settings appended a SECOND {@code default_model} at the top of the section
+     * instead of replacing the first. A duplicate key makes the file unparseable,
+     * and a config the core cannot parse stops the core from starting.
+     */
+    private static boolean assignsKey(String line, String key) {
+        String trimmed = line.trim();
+        if (!trimmed.startsWith(key)) return false;
+        int at = key.length();
+        while (at < trimmed.length()
+            && (trimmed.charAt(at) == ' ' || trimmed.charAt(at) == '\t')) {
+            at++;
+        }
+        return at < trimmed.length() && trimmed.charAt(at) == '=';
     }
 
     /**

@@ -20,8 +20,10 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Loopback HTTP surface the agent drives from inside the TUI.
@@ -66,7 +68,31 @@ public final class AutomationServer {
     static volatile boolean sAppForeground;
 
     private final Context mContext;
-    private final ExecutorService mWorkers = Executors.newFixedThreadPool(2);
+    /**
+     * Two workers and a BOUNDED queue.
+     *
+     * <p>The backlog of 8 passed to {@link ServerSocket} bounds the connections the
+     * kernel has not accepted yet; it says nothing about sockets already accepted
+     * and parked here. With an unbounded queue every accepted socket was parked
+     * before its token was checked or its read timeout set, so another app on the
+     * device could hold both workers with half-sent headers and keep connecting
+     * until the process ran out of file descriptors. A full queue now closes the
+     * socket instead, which the caller sees as a reset rather than a hang.
+     */
+    private static final int WORKER_QUEUE = 8;
+    private final ExecutorService mWorkers = new ThreadPoolExecutor(
+            2, 2, 0L, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<Runnable>(WORKER_QUEUE),
+            r -> {
+                Thread t = new Thread(r, "crabs-auto-worker");
+                t.setDaemon(true);
+                return t;
+            },
+            (r, executor) -> {
+                if (r instanceof Job) {
+                    ((Job) r).close();
+                }
+            });
     /**
      * Shell-backed UI control. The accessibility service this used to hold is
      * gone: a manifest that declares ACCESSIBILITY cannot be installed from a
@@ -88,6 +114,13 @@ public final class AutomationServer {
         }
         AutomationServer s = new AutomationServer(context);
         s.startInternal();
+        if (!s.mRunning) {
+            // Binding failed. Caching this instance would make isRunning() answer
+            // true and make every later start() a no-op, so one transient bind
+            // failure would disable automation for the life of the process.
+            Log.w(TAG, "automation surface did not start; left retryable");
+            return;
+        }
         sInstance = s;
     }
 
@@ -105,10 +138,25 @@ public final class AutomationServer {
 
     private void startInternal() {
         mToken = loadOrCreateToken();
+        // Bind HERE, on the caller's thread, before the listener thread exists.
+        // The old order started the thread and then set mRunning, so a listener
+        // that reached its `while (mRunning)` guard first exited immediately while
+        // leaving the socket bound: nothing ever accepted again, and sInstance
+        // blocked a retry. Binding first makes a failure a return value instead of
+        // a race, and makes mRunning true before any thread can read it.
+        try {
+            // Loopback only. The backlog caps connections the kernel has not
+            // accepted yet; sockets already accepted are bounded by WORKER_QUEUE.
+            mSocket = new ServerSocket(PORT, 8, InetAddress.getByName("127.0.0.1"));
+        } catch (IOException e) {
+            Log.e(TAG, "cannot bind 127.0.0.1:" + PORT, e);
+            mRunning = false;
+            return;
+        }
+        mRunning = true;
         Thread t = new Thread(this::acceptLoop, "crabs-automation");
         t.setDaemon(true);
         t.start();
-        mRunning = true;
         Log.i(TAG, "automation surface listening on 127.0.0.1:" + PORT);
     }
 
@@ -125,24 +173,44 @@ public final class AutomationServer {
     }
 
     private void acceptLoop() {
-        try {
-            // Loopback only. The second argument caps the backlog so a flood
-            // cannot queue unbounded connections.
-            mSocket = new ServerSocket(PORT, 8, InetAddress.getByName("127.0.0.1"));
-        } catch (IOException e) {
-            Log.e(TAG, "cannot bind 127.0.0.1:" + PORT, e);
-            mRunning = false;
-            return;
-        }
         while (mRunning) {
             try {
                 final Socket client = mSocket.accept();
-                mWorkers.execute(() -> handle(client));
+                mWorkers.execute(new Job(client));
             } catch (IOException e) {
                 if (mRunning) {
                     Log.w(TAG, "accept failed", e);
                 }
                 break;
+            }
+        }
+    }
+
+    /**
+     * One accepted connection, wrapped so the rejection handler can close it.
+     *
+     * <p>A bare lambda would leave the handler with nothing to close, and a socket
+     * shed for lack of a worker has to be closed by us: the caller is waiting on a
+     * response that will never come, and a leaked descriptor is the exact failure
+     * the bounded queue exists to prevent.
+     */
+    private final class Job implements Runnable {
+        private final Socket socket;
+
+        Job(Socket socket) {
+            this.socket = socket;
+        }
+
+        @Override
+        public void run() {
+            handle(socket);
+        }
+
+        void close() {
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+                // already closed by the peer, which is the state we wanted anyway
             }
         }
     }

@@ -191,6 +191,13 @@ public final class TerminalPane extends View {
 
     /** Attach the session this pane renders. Call after {@link TerminalSession#initializeEmulator}. */
     public void attachSession(TerminalSession session) {
+        // Forget the cached grid first. updateSessionSize() skips a size it has
+        // already pushed, and the FIRST size pushed to a session is what creates
+        // the child process. restartCore() attaches a fresh session at the grid
+        // the pane already has, so the guard swallowed the one call that would
+        // have spawned the core: the terminal stayed blank until the grid changed.
+        lastCols = -1;
+        lastRows = -1;
         this.session = session;
         updateSessionSize();
         requestLayout();

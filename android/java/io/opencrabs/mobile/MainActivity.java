@@ -63,6 +63,15 @@ public class MainActivity extends Activity {
     private TerminalSession session;
     private TextView title;
     private LinearLayout toolbar;
+    /**
+     * The only way out of FULL while the toolbar is hidden.
+     *
+     * <p>FULL hides the toolbar, and the toolbar held the only FULL button, so the
+     * mode was one-way: the swipe gesture reveals the system bars, not this toolbar,
+     * and the setting is restored on the next launch. A floating control that
+     * outlives the toolbar it hides turns a trap back into a toggle.
+     */
+    private TextView exitFull;
     private SharedPreferences prefs;
 
     /** True while the IME is up, i.e. while the title bar earns its space back. */
@@ -211,6 +220,20 @@ public class MainActivity extends Activity {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         setContentView(shell);
+
+        // Added to the shell rather than to the toolbar on purpose: it has to
+        // survive the toolbar being hidden, which is exactly the state it exists
+        // to get out of. It sits above the pane and below the crash panel, which
+        // is added after it and therefore draws on top.
+        exitFull = toolButton("EXIT FULL");
+        exitFull.setOnClickListener(v -> setFullScreen(false));
+        FrameLayout.LayoutParams exitParams = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP | Gravity.END);
+        exitParams.topMargin = dp(4);
+        exitParams.rightMargin = dp(4);
+        shell.addView(exitFull, exitParams);
+        exitFull.setVisibility(immersive ? View.VISIBLE : View.GONE);
 
         // Edge-to-edge and the insets listener go in AFTER setContentView. The window
         // insets controller and the decor view only exist once there is content to
@@ -397,6 +420,9 @@ public class MainActivity extends Activity {
         prefs.edit().putBoolean(PREF_IMMERSIVE, on).apply();
         applyImmersive(on);
         toolbar.setVisibility(on || typing ? View.GONE : View.VISIBLE);
+        // The exit control is the inverse of the toolbar: visible exactly when the
+        // button that turns FULL off is not.
+        exitFull.setVisibility(on ? View.VISIBLE : View.GONE);
         Toast.makeText(this, on ? "FULL: swipe to reveal bars" : "FULL off",
             Toast.LENGTH_SHORT).show();
     }
@@ -488,14 +514,24 @@ public class MainActivity extends Activity {
         if (uri == null) {
             return;
         }
-        String marker = Attachments.importToHome(this, uri);
-        if (marker == null) {
-            Toast.makeText(this, "cannot read that file", Toast.LENGTH_LONG).show();
-            return;
-        }
-        // Trailing space, not a newline: the user still wants to add a question,
-        // and submitting here would send the marker on its own.
-        pane.sendText(marker + " ");
+        // The copy runs on a worker, not here. This callback is on the main thread,
+        // and importToHome() streams the whole file: a large video, or a document
+        // that a cloud provider has to download first, blocks drawing for its full
+        // duration and the system answers with an app-not-responding dialog. Only
+        // the prompt insert has to be on the main thread, so only that comes back.
+        final android.content.Context app = getApplicationContext();
+        new Thread(() -> {
+            final String marker = Attachments.importToHome(app, uri);
+            runOnUiThread(() -> {
+                if (marker == null) {
+                    Toast.makeText(this, "cannot read that file", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                // Trailing space, not a newline: the user still wants to add a
+                // question, and submitting here would send the marker on its own.
+                pane.sendText(marker + " ");
+            });
+        }, "crabs-attach").start();
     }
 
     private void startSession() {

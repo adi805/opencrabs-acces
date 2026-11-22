@@ -302,10 +302,7 @@ impl FsProxy {
 
     /// Requests still waiting for a reply.
     pub fn pending_count(&self) -> usize {
-        self.pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Wait for the reply, or answer `CLIENT_OFFLINE` at the deadline.
@@ -449,9 +446,10 @@ pub(crate) async fn client_op(
     path: &str,
     extra: Value,
 ) -> Result<FsReply, RemoteError> {
-    let session_id = device_session(relay, device_id).ok_or_else(|| RemoteError::ClientOffline {
-        device_id: device_id.to_string(),
-    })?;
+    let session_id =
+        device_session(relay, device_id).ok_or_else(|| RemoteError::ClientOffline {
+            device_id: device_id.to_string(),
+        })?;
     let request_id = Uuid::new_v4();
     let rx = relay.fs.begin(request_id)?;
     let published = relay.publish(
@@ -604,11 +602,7 @@ pub async fn handle_fs_write(id: Value, params: Value, relay: Arc<RelayState>) -
                 let rel = client_relative_path(&path, &label)?;
                 let extra = json!({ "bytes_base64": encoded, "sha256": actual });
                 let reply = client_op(&relay, &device_id, FsOp::Write, &rel, extra).await?;
-                let written = reply
-                    .bytes
-                    .as_ref()
-                    .map(|b| b.len())
-                    .unwrap_or(bytes.len());
+                let written = reply.bytes.as_ref().map(|b| b.len()).unwrap_or(bytes.len());
                 Ok(json!({
                     "namespace": label,
                     "bytes_written": written,

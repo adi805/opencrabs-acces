@@ -78,7 +78,14 @@ public final class ShellAutomation {
      * implementation produced, so callers and prompts do not change.
      */
     public JSONArray dumpScreen() throws Exception {
-        String cmd = "uiautomator dump " + DUMP_PATH + " >/dev/null 2>&1; cat " + DUMP_PATH;
+        // Remove the previous dump, then dump and read in ONE && chain. The old
+        // command was `uiautomator dump ... ; cat ...`: the `;` made the exit code
+        // cat's, so whenever the dump failed the PREVIOUS file was read back with
+        // success, /dump reported a stale screen and clickText() tapped
+        // coordinates taken from it. With `&&` a failed dump leaves nothing to
+        // read and the caller gets an error instead of yesterday's screen.
+        String cmd = "rm -f " + DUMP_PATH + " && uiautomator dump " + DUMP_PATH
+                + " && cat " + DUMP_PATH;
         ShellBridge.Result r = ShellBridge.run(cmd, DUMP_TIMEOUT_MS);
         if (!r.ok()) {
             throw new IllegalStateException("uiautomator dump failed: " + r.text().trim());

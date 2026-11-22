@@ -280,6 +280,18 @@ if ! javac --release 8 -nowarn -classpath "$CLASSPATH" \
 fi
 grep -v 'bootstrap class path' "$OUT/javac.log" || true
 
+# --- 2b. the one piece of shell logic that carries assertions ----------------
+#
+# TomlEdit rewrites config.toml, and a duplicate key there makes the file
+# unparseable, which stops the core from starting. That is the failure mode that
+# made the tab-before-`=` bug read as a broken core rather than a broken editor,
+# so the cases run here instead of being trusted: javac has just produced the
+# classes, and the same JDK runs them. No test framework, no gradle task.
+if ! java -cp "$OUT/classes:$CLASSPATH" io.opencrabs.mobile.TomlEditSelfTest; then
+  echo "TomlEdit self-test failed" >&2
+  exit 1
+fi
+
 find "$OUT/classes" -name '*.class' > "$OUT/classes.txt"
 "$BT/d8" --lib "$AJAR" --min-api "$MIN_SDK" --output "$OUT" \
   "@$OUT/classes.txt" "@$OUT/jars.txt"
