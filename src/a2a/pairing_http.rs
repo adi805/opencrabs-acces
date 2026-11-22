@@ -7,8 +7,9 @@
 //!
 //! 1. Fixed-window per-client rate limit (in-memory, [`PAIR_RATE_LIMIT`]
 //!    per minute) in front of any store access.
-//! 2. The store's own global fail-streak lockout (10 misses = 15 min),
-//!    surfaced as 429 + `Retry-After`.
+//! 2. The store's own per-client fail-streak lockout (10 misses = 15 min),
+//!    surfaced as 429 + `Retry-After`; a host-wide lock written by an older
+//!    build still refuses everyone, but no client can trip one any more.
 //! 3. Single-use codes with a 5-minute TTL; every failure reads the same
 //!    (invalid / expired / used), so failures leak nothing.
 //!
