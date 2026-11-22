@@ -168,7 +168,11 @@ pub async fn pair_rate_limit(
 /// `ConnectInfo<T>` has no `OptionalFromRequestParts`, so `Option<ConnectInfo>`
 /// is not a valid argument and does not compile. Unit tests build the router
 /// without connect info, so this yields `None` instead of rejecting.
-struct MaybePeer(Option<SocketAddr>);
+///
+/// `pub` because it appears in the signature of the `pub` handler: a private
+/// type there is the `private_interfaces` lint, which this repo's
+/// `-D warnings` clippy gate turns into a build failure.
+pub struct MaybePeer(Option<SocketAddr>);
 
 impl<S: Send + Sync> FromRequestParts<S> for MaybePeer {
     type Rejection = Infallible;
