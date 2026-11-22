@@ -162,8 +162,19 @@ pub async fn pair_rate_limit(
 
 /// POST /a2a/pair — exchange a one-time code for a scoped session token.
 /// Rate limiting happens in [`pair_rate_limit`], before this handler.
-pub async fn handle_pair(State(state): State<A2aState>, Json(body): Json<PairRequest>) -> Response {
-    match state.pairing.verify_code(&body.code, &body.label) {
+///
+/// The same trust-derived client key that buckets the rate limit also keys the
+/// failure streak, so an attacker burning guesses locks only their own bucket.
+/// `ConnectInfo` is optional because unit tests build the router without it;
+/// `client_key` then falls back to the forwarded header, then to `"direct"`.
+pub async fn handle_pair(
+    State(state): State<A2aState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    Json(body): Json<PairRequest>,
+) -> Response {
+    let client = client_key(&headers, peer.map(|ci| ci.0));
+    match state.pairing.verify_code(&body.code, &body.label, &client) {
         Ok((token, session)) => {
             tracing::info!(label = %session.label, session = %session.id, "A2A pairing: session issued");
             (

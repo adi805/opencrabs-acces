@@ -17,6 +17,7 @@
 //! lifetime travels on the stored code, never on the wire, so the client
 //! cannot ask for more than the operator minted.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -45,10 +46,23 @@ pub const TOKEN_TTL_SECS: u64 = 30 * 86_400;
 pub const GUEST_TTL_SECS: u64 = 3_600;
 /// Prefix on every issued token: greppable, recognizable, revocable.
 pub const TOKEN_PREFIX: &str = "ocpair_";
-/// Consecutive failed verifies before the whole store locks out pairing.
+/// Consecutive failed verifies before a client locks itself out of pairing.
 pub const MAX_FAIL_STREAK: u32 = 10;
 /// Lockout duration once tripped, seconds.
 pub const LOCKOUT_SECS: u64 = 900;
+/// Distinct clients the failure map tracks before the least-recently-seen
+/// entries are evicted. Without a cap every spoofed source address would add
+/// a permanent entry to the store file.
+pub const MAX_TRACKED_CLIENTS: usize = 1024;
+/// Attempts to draw a code whose hash no stored code already holds. Two codes
+/// with the same text would make `verify_code`'s first match hand out the
+/// other code's scopes, so a colliding candidate is redrawn. 40 bits of
+/// entropy make one retry essentially unreachable; the bound stops a broken
+/// RNG from spinning forever under the store lock.
+pub const MINT_RETRIES: u8 = 8;
+/// Cap on a persisted client key: it arrives from an HTTP header on the
+/// tunnel path, so it is attacker-controlled text.
+const MAX_CLIENT_KEY_LEN: usize = 64;
 /// Sessions expired/revoked longer than this get swept from the file.
 const SESSION_RETENTION_SECS: u64 = 7 * 86_400;
 /// Label cap; longer input is truncated, not rejected.
@@ -74,6 +88,23 @@ fn sanitize_label(label: &str) -> String {
         .collect();
     if cleaned.is_empty() {
         "unnamed".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Normalize the caller identity into a stable map key. Two requests from the
+/// same source must land on the same bucket, so this only trims and bounds
+/// the text: it never rewrites the address itself.
+fn sanitize_client(client: &str) -> String {
+    let cleaned: String = client
+        .trim()
+        .chars()
+        .filter(char::is_ascii_graphic)
+        .take(MAX_CLIENT_KEY_LEN)
+        .collect();
+    if cleaned.is_empty() {
+        "direct".to_string()
     } else {
         cleaned
     }
@@ -161,17 +192,38 @@ pub struct SessionView {
     pub active: bool,
 }
 
+/// Per-client failure state. One entry per distinct caller identity, so the
+/// lockout a stranger trips lands on that stranger instead of on the owner.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct ClientFails {
+    /// Consecutive failures since this client last succeeded or got locked.
+    #[serde(default)]
+    pub streak: u32,
+    /// Unix seconds until which THIS client is refused.
+    #[serde(default)]
+    pub locked_until: Option<u64>,
+    /// Last attempt, used to evict the coldest entries at the cap.
+    #[serde(default)]
+    pub last_seen: u64,
+}
+
 /// On-disk shape of `state/remote/pairing.json`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StoreFile {
     #[serde(default = "default_version")]
     pub version: u32,
-    /// Consecutive failed verify_code calls (global, resets on success).
+    /// Legacy global streak. Still read so an older file parses, but no
+    /// longer incremented: a single counter shared by every caller is what
+    /// let ten wrong guesses lock the owner out of their own host.
     #[serde(default)]
     pub fail_streak: u32,
-    /// Unix seconds until which all pairing is refused.
+    /// Unix seconds until which ALL pairing is refused. Operator-set, and
+    /// still honored as a floor on top of the per-client locks below.
     #[serde(default)]
     pub locked_until: Option<u64>,
+    /// Per-client failure state, keyed by the trust-derived client identity.
+    #[serde(default)]
+    pub fail_streaks: BTreeMap<String, ClientFails>,
     #[serde(default)]
     pub codes: Vec<PendingCode>,
     #[serde(default)]
@@ -188,6 +240,7 @@ impl Default for StoreFile {
             version: 1,
             fail_streak: 0,
             locked_until: None,
+            fail_streaks: BTreeMap::new(),
             codes: Vec::new(),
             sessions: Vec::new(),
         }
@@ -283,14 +336,30 @@ impl PairingStore {
         dedup.sort();
         dedup.dedup();
 
-        let code: String = random_bytes::<8>()
-            .iter()
-            .map(|b| CODE_ALPHABET[(b & 31) as usize] as char)
-            .collect();
-        let hash = sha_b64(&code);
         let now = now_secs();
 
         self.with_locked_store(|st| {
+            // Draw under the store lock so the collision check and the insert
+            // are one atomic step: a candidate is accepted only when no stored
+            // code already holds its hash. Two live codes with the same text
+            // would let `verify_code`'s first match redeem the wrong grant.
+            let mut drawn: Option<(String, String)> = None;
+            for _ in 0..MINT_RETRIES {
+                let candidate: String = random_bytes::<8>()
+                    .iter()
+                    .map(|b| CODE_ALPHABET[(b & 31) as usize] as char)
+                    .collect();
+                let candidate_hash = sha_b64(&candidate);
+                if !st.codes.iter().any(|c| c.code_hash == candidate_hash) {
+                    drawn = Some((candidate, candidate_hash));
+                    break;
+                }
+            }
+            let Some((code, hash)) = drawn else {
+                anyhow::bail!(
+                    "could not draw a pairing code free of collisions in {MINT_RETRIES} attempts"
+                );
+            };
             st.codes.push(PendingCode {
                 code_hash: hash,
                 scopes: dedup,
@@ -298,22 +367,28 @@ impl PairingStore {
                 expires_at: now + CODE_TTL_SECS,
                 session_ttl_secs,
             });
-            Ok(())
-        })?;
-        Ok(code)
+            Ok(code)
+        })
     }
 
     /// Verify a presented code; on success consume it and issue a session.
     /// Wrong guesses don't reveal which codes exist: every failure is
-    /// `NoMatch`, and a global fail streak eventually locks pairing.
+    /// `NoMatch`, and a fail streak eventually locks pairing for that caller.
+    ///
+    /// `client` is the trust-derived caller identity (the HTTP layer's
+    /// `client_key`: edge IP behind the tunnel, socket peer otherwise). The
+    /// streak and the lock it trips are per client, so ten wrong guesses from
+    /// a stranger lock the stranger out instead of the owner.
     pub fn verify_code(
         &self,
         code: &str,
         label: &str,
+        client: &str,
     ) -> std::result::Result<(String, Session), VerifyError> {
         let now = now_secs();
         let hash = sha_b64(code.trim());
         let label = sanitize_label(label);
+        let client = sanitize_client(client);
 
         self.with_locked_store(
             |st| -> Result<std::result::Result<(String, Session), VerifyError>> {
@@ -325,20 +400,52 @@ impl PairingStore {
                     }
                     st.locked_until = None;
                 }
+                // A file written before this change carries one global streak.
+                // Reading it is fine, continuing to count it is the bug, so it
+                // is reset here and a lock it already tripped stays enforced
+                // through `locked_until` above.
+                st.fail_streak = 0;
+
+                // Per-client lock: scoped to its own block so the borrow ends
+                // before `st.codes` is touched below.
+                let client_locked = {
+                    let entry = st.fail_streaks.entry(client.clone()).or_default();
+                    entry.last_seen = now;
+                    match entry.locked_until {
+                        Some(until) if now < until => Some(until),
+                        Some(_) => {
+                            entry.locked_until = None;
+                            entry.streak = 0;
+                            None
+                        }
+                        None => None,
+                    }
+                };
+                if let Some(until) = client_locked {
+                    return Ok(Err(VerifyError::Locked {
+                        retry_after_secs: until - now,
+                    }));
+                }
+
                 let found = st
                     .codes
                     .iter()
                     .position(|c| c.code_hash == hash && c.expires_at > now);
                 let Some(idx) = found else {
-                    st.fail_streak += 1;
-                    if st.fail_streak >= MAX_FAIL_STREAK {
-                        st.locked_until = Some(now + LOCKOUT_SECS);
-                        st.fail_streak = 0;
+                    let entry = st.fail_streaks.entry(client.clone()).or_default();
+                    entry.streak += 1;
+                    if entry.streak >= MAX_FAIL_STREAK {
+                        entry.locked_until = Some(now + LOCKOUT_SECS);
+                        entry.streak = 0;
                     }
                     return Ok(Err(VerifyError::NoMatch));
                 };
+                {
+                    let entry = st.fail_streaks.entry(client.clone()).or_default();
+                    entry.streak = 0;
+                    entry.locked_until = None;
+                }
                 let pending = st.codes.remove(idx);
-                st.fail_streak = 0;
                 // Clamped at issue time too: the store is owner-writable, and
                 // a hand-edited TTL must not mint a session longer than the
                 // 30-day shape (#2873).
@@ -484,4 +591,23 @@ fn sweep(store: &mut StoreFile, now: u64) {
                 .max(if s.expires_at <= now { s.expires_at } else { 0 });
         dead_since == 0 || now.saturating_sub(dead_since) < SESSION_RETENTION_SECS
     });
+    // Client failure state is kept only while it can still refuse someone:
+    // an active lock, or a streak young enough to matter. Everything else is
+    // dropped, so a scan of random source addresses cannot grow the file.
+    store.fail_streaks.retain(|_, e| {
+        let lock_live = matches!(e.locked_until, Some(u) if u > now);
+        lock_live || (e.streak > 0 && now.saturating_sub(e.last_seen) < LOCKOUT_SECS)
+    });
+    if store.fail_streaks.len() > MAX_TRACKED_CLIENTS {
+        let mut by_age: Vec<(u64, String)> = store
+            .fail_streaks
+            .iter()
+            .map(|(k, v)| (v.last_seen, k.clone()))
+            .collect();
+        by_age.sort();
+        let excess = store.fail_streaks.len() - MAX_TRACKED_CLIENTS;
+        for (_, key) in by_age.into_iter().take(excess) {
+            store.fail_streaks.remove(&key);
+        }
+    }
 }

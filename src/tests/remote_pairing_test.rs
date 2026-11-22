@@ -55,7 +55,7 @@ fn mint_validates_scopes() {
 fn store_never_contains_plaintext_secret() {
     let (_d, st) = store();
     let code = st.mint_code(&full_scopes()).unwrap();
-    let (token, _s) = st.verify_code(&code, "phone").expect("verify");
+    let (token, _s) = st.verify_code(&code, "phone", "c").expect("verify");
     let raw = std::fs::read_to_string(st.path()).unwrap();
     assert!(!raw.contains(&code), "plaintext code at rest");
     assert!(!raw.contains(&token), "plaintext token at rest");
@@ -67,7 +67,7 @@ fn verify_success_issues_scoped_session() {
     let (_d, st) = store();
     let read_only = vec![SCOPE_READ.to_string()];
     let code = st.mint_code(&read_only).unwrap();
-    let (token, session) = st.verify_code(&code, "monitor").expect("verify");
+    let (token, session) = st.verify_code(&code, "monitor", "c").expect("verify");
     assert!(token.starts_with(TOKEN_PREFIX));
     assert_eq!(session.scopes, read_only);
     assert_eq!(session.label, "monitor");
@@ -84,10 +84,10 @@ fn verify_is_single_use_and_trims() {
     let (_d, st) = store();
     let code = st.mint_code(&full_scopes()).unwrap();
     let padded = format!("  {code}  ");
-    st.verify_code(&padded, "a")
+    st.verify_code(&padded, "a", "c")
         .expect("first verify (trimmed)");
     assert!(matches!(
-        st.verify_code(&code, "b"),
+        st.verify_code(&code, "b", "c"),
         Err(VerifyError::NoMatch)
     ));
 }
@@ -100,7 +100,7 @@ fn expired_code_rejected() {
     raw["codes"][0]["expires_at"] = serde_json::json!(1u64);
     write_raw(&st, &raw);
     assert!(matches!(
-        st.verify_code(&code, "x"),
+        st.verify_code(&code, "x", "c"),
         Err(VerifyError::NoMatch)
     ));
 }
@@ -112,18 +112,18 @@ fn lockout_trips_after_max_fail_streak() {
     for i in 0..(MAX_FAIL_STREAK - 1) {
         let wrong = format!("WRONG{i:04}");
         assert!(matches!(
-            st.verify_code(&wrong, "x"),
+            st.verify_code(&wrong, "x", "c"),
             Err(VerifyError::NoMatch)
         ));
     }
     // the MAX_FAIL_STREAK-th failure trips the lock but still reads NoMatch
     assert!(matches!(
-        st.verify_code("WRONGFINAL", "x"),
+        st.verify_code("WRONGFINAL", "x", "c"),
         Err(VerifyError::NoMatch)
     ));
     // the CORRECT code during lockout is refused as Locked, not consumed
     assert!(matches!(
-        st.verify_code(&code, "x"),
+        st.verify_code(&code, "x", "c"),
         Err(VerifyError::Locked { .. })
     ));
 }
@@ -133,18 +133,69 @@ fn lockout_expires() {
     let (_d, st) = store();
     let code = st.mint_code(&full_scopes()).unwrap();
     for _ in 0..MAX_FAIL_STREAK {
-        let _ = st.verify_code("NOPE1234", "x");
+        let _ = st.verify_code("NOPE1234", "x", "c");
     }
     assert!(matches!(
-        st.verify_code(&code, "x"),
+        st.verify_code(&code, "x", "c"),
         Err(VerifyError::Locked { .. })
     ));
+    // Two locks exist now: the operator-level `locked_until` floor and the
+    // per-client one this streak tripped. Expiry has to clear both, so the
+    // test rewinds both the way wall-clock passage would.
     let mut raw = read_raw(&st);
     raw["locked_until"] = serde_json::json!(1u64);
+    for entry in raw["fail_streaks"].as_object_mut().unwrap().values_mut() {
+        entry["locked_until"] = serde_json::json!(1u64);
+    }
     write_raw(&st, &raw);
     assert!(
-        st.verify_code(&code, "x").is_ok(),
+        st.verify_code(&code, "x", "c").is_ok(),
         "lock expiry must restore pairing"
+    );
+}
+
+#[test]
+fn one_client_cannot_lock_out_another() {
+    let (_d, st) = store();
+    let code = st.mint_code(&full_scopes()).unwrap();
+
+    // A stranger burns the full streak from their own address.
+    for _ in 0..MAX_FAIL_STREAK {
+        let _ = st.verify_code("NOPE1234", "x", "203.0.113.9");
+    }
+    assert!(
+        matches!(
+            st.verify_code(&code, "x", "203.0.113.9"),
+            Err(VerifyError::Locked { .. })
+        ),
+        "the attacker must be locked out"
+    );
+
+    // The owner, arriving from a different client key, is untouched. This is
+    // the whole point: the global counter used to lock everyone, so ten
+    // guesses from a stranger denied pairing to the machine's own operator.
+    let (token, session) = st
+        .verify_code(&code, "phone", "198.51.100.4")
+        .expect("a stranger's failures must not lock another client out");
+    assert_eq!(session.label, "phone");
+    assert!(st.verify_token(&token).is_some());
+}
+
+#[test]
+fn legacy_global_lock_still_blocks_every_client() {
+    let (_d, st) = store();
+    let code = st.mint_code(&full_scopes()).unwrap();
+    // A hand-set (or pre-existing) global lock is an operator floor: it must
+    // keep refusing pairing even for a client with a clean streak.
+    let mut raw = read_raw(&st);
+    raw["locked_until"] = serde_json::json!(u64::MAX);
+    write_raw(&st, &raw);
+    assert!(
+        matches!(
+            st.verify_code(&code, "x", "198.51.100.4"),
+            Err(VerifyError::Locked { .. })
+        ),
+        "a global locked_until must refuse every client"
     );
 }
 
@@ -152,7 +203,7 @@ fn lockout_expires() {
 fn token_checks() {
     let (_d, st) = store();
     let code = st.mint_code(&full_scopes()).unwrap();
-    let (token, _) = st.verify_code(&code, "t").unwrap();
+    let (token, _) = st.verify_code(&code, "t", "c").unwrap();
     assert!(st.verify_token(&token).is_some());
     assert!(
         st.verify_token(&format!("{token}X")).is_none(),
@@ -169,7 +220,7 @@ fn token_checks() {
 fn expired_session_token_rejected() {
     let (_d, st) = store();
     let code = st.mint_code(&full_scopes()).unwrap();
-    let (token, _) = st.verify_code(&code, "t").unwrap();
+    let (token, _) = st.verify_code(&code, "t", "c").unwrap();
     let mut raw = read_raw(&st);
     raw["sessions"][0]["expires_at"] = serde_json::json!(1u64);
     write_raw(&st, &raw);
@@ -181,8 +232,8 @@ fn revoke_by_id_and_label() {
     let (_d, st) = store();
     let c1 = st.mint_code(&full_scopes()).unwrap();
     let c2 = st.mint_code(&full_scopes()).unwrap();
-    let (t1, s1) = st.verify_code(&c1, "phone").unwrap();
-    let (t2, _s2) = st.verify_code(&c2, "laptop").unwrap();
+    let (t1, s1) = st.verify_code(&c1, "phone", "c").unwrap();
+    let (t2, _s2) = st.verify_code(&c2, "laptop", "c").unwrap();
 
     assert_eq!(st.revoke(&s1.id).unwrap(), 1);
     assert!(st.verify_token(&t1).is_none(), "revoked by id");
@@ -197,7 +248,7 @@ fn revoke_by_id_and_label() {
 fn list_sessions_is_safe_and_accurate() {
     let (_d, st) = store();
     let code = st.mint_code(&full_scopes()).unwrap();
-    let (token, _) = st.verify_code(&code, "viewme").unwrap();
+    let (token, _) = st.verify_code(&code, "viewme", "c").unwrap();
     let views = st.list_sessions().unwrap();
     assert_eq!(views.len(), 1);
     assert_eq!(views[0].label, "viewme");
@@ -237,10 +288,10 @@ fn sweep_drops_expired_codes_on_next_write() {
 fn labels_are_sanitized() {
     let (_d, st) = store();
     let code = st.mint_code(&full_scopes()).unwrap();
-    let (_t, s) = st.verify_code(&code, "  \u{7}evil\u{0}name  ").unwrap();
+    let (_t, s) = st.verify_code(&code, "  \u{7}evil\u{0}name  ", "c").unwrap();
     assert_eq!(s.label, "evilname");
     let c2 = st.mint_code(&full_scopes()).unwrap();
-    let (_t2, s2) = st.verify_code(&c2, "   ").unwrap();
+    let (_t2, s2) = st.verify_code(&c2, "   ", "c").unwrap();
     assert_eq!(s2.label, "unnamed");
 }
 
@@ -250,7 +301,7 @@ fn corrupt_store_is_an_error_not_a_wipe() {
     st.mint_code(&full_scopes()).unwrap();
     std::fs::write(st.path(), b"{ not json").unwrap();
     assert!(matches!(
-        st.verify_code("ANYTHING", "x"),
+        st.verify_code("ANYTHING", "x", "c"),
         Err(VerifyError::Storage(_))
     ));
     assert!(st.mint_code(&full_scopes()).is_err());
@@ -268,7 +319,7 @@ fn guest_ttl_grants_an_hour_and_then_refuses() {
     let code = st
         .mint_code_with_ttl(&full_scopes(), GUEST_TTL_SECS)
         .expect("mint guest code");
-    let (token, session) = st.verify_code(&code, "guest").expect("verify");
+    let (token, session) = st.verify_code(&code, "guest", "c").expect("verify");
     assert_eq!(
         session.expires_at - session.created_at,
         GUEST_TTL_SECS,
@@ -291,7 +342,7 @@ fn guest_ttl_grants_an_hour_and_then_refuses() {
 fn default_code_still_grants_the_full_session() {
     let (_d, st) = store();
     let code = st.mint_code(&full_scopes()).expect("mint");
-    let (_t, session) = st.verify_code(&code, "owner").expect("verify");
+    let (_t, session) = st.verify_code(&code, "owner", "c").expect("verify");
     assert_eq!(session.expires_at - session.created_at, TOKEN_TTL_SECS);
 }
 
@@ -328,7 +379,7 @@ fn code_written_before_the_ttl_field_keeps_its_full_session() {
         "the minted code must carry the field this test removes"
     );
     write_raw(&st, &raw);
-    let (_t, session) = st.verify_code(&code, "legacy").expect("verify");
+    let (_t, session) = st.verify_code(&code, "legacy", "c").expect("verify");
     assert_eq!(
         session.expires_at - session.created_at,
         TOKEN_TTL_SECS,
