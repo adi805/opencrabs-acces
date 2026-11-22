@@ -17,6 +17,21 @@ name: CI
 # and trusts the commit already passed CI on its way to main. That also
 # kills the old double-build where ci.yml and release.yml both compiled
 # Windows/macOS on the same tag event.
+#
+# Fork routing: this repository has no self-hosted runner registered --
+# `repos/adi805/opencrabs-acces/actions/runners` reports total_count 0 -- so any
+# job that resolves to `self-hosted` is created with no runner and waits until
+# something cancels it. The carve-out below used to cover only a fork PULL
+# REQUEST, which left a push to this fork's main on the other branch of the same
+# expression: run 45071446967 was created at 21:19:23Z and still read `pending`
+# with zero jobs, queued behind run 45030147702 whose `CI Required Gate` had
+# been waiting on `self-hosted` since 13:57:00Z the same day. A required check
+# that can never be assigned is not a gate, it is a run that never concludes.
+#
+# `github.repository_owner != 'opencrabs'` is that carve-out generalised: every
+# run in a non-canonical repository takes the hosted path. The fork-PR branch
+# stays inside the predicate, so routing inside `opencrabs/opencrabs` is
+# unchanged.
 on:
   pull_request:
   push:
@@ -51,7 +66,7 @@ jobs:
   # cross-platform build/test matrix for a PR that won't lint anyway.
   lint:
     name: Lint
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'self-hosted' }}
+    runs-on: ${{ (github.repository_owner != 'opencrabs' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork)) && 'ubuntu-latest' || 'self-hosted' }}
     # 25: hosted Lint ran 13:43 of its 15 cap on a fork PR (run
     # 36069934718); one noisy neighbor on the hosted fleet is a false red.
     timeout-minutes: 25
@@ -194,7 +209,7 @@ jobs:
     if: >-
       always() &&
       (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') &&
-      !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) &&
+      !(github.repository_owner != 'opencrabs' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork)) &&
       needs.lint.result == 'success' &&
       needs.audit.result == 'success' &&
       needs.test.result == 'success' &&
@@ -735,7 +750,7 @@ jobs:
   windows-footguns:
     name: Windows footguns
     timeout-minutes: 10
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'self-hosted' }}
+    runs-on: ${{ (github.repository_owner != 'opencrabs' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork)) && 'ubuntu-latest' || 'self-hosted' }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
@@ -777,13 +792,13 @@ jobs:
   test:
     name: Test
     needs: [lint, audit]
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'self-hosted' }}
+    runs-on: ${{ (github.repository_owner != 'opencrabs' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork)) && 'ubuntu-latest' || 'self-hosted' }}
     # This leg is the release-mode correctness check, so it stays on
     # `--profile ci` (release, thin LTO). The cheap `citest` profile is
     # only for the legs that exist to prove the code works, not to prove
     # it works optimised.
     env:
-      TEST_PROFILE: ci
+      TEST_PROFILE: ${{ (github.repository_owner != 'opencrabs' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork)) && 'citest' || 'ci' }}
     # Fork PRs run this on hosted runners, where the cache key can never
     # match (#3132). The job id is part of the key: `main` writes the `test`
     # leg as Darwin-arm64, and only `test-linux` writes Linux-x64, so a fork
@@ -792,7 +807,7 @@ jobs:
     # 44887285200 (twice) and 44884055080 at the ceiling with green code
     # still compiling. 180 is the ceiling `test-linux` already gives the
     # warm leg. The old 60 was sized for a warm run a fork can never have.
-    timeout-minutes: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 180 || 60 }}
+    timeout-minutes: ${{ (github.repository_owner != 'opencrabs' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork)) && 180 || 60 }}
     steps: &test-steps
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
@@ -946,7 +961,7 @@ jobs:
   test-linux:
     name: Test (Linux)
     needs: [lint, audit]
-    if: ${{ !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) }}
+    if: ${{ !(github.repository_owner != 'opencrabs' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork)) }}
     runs-on: ubuntu-24.04
     # 180, not 90 (#2934): the citest profile changed `Cargo.toml`, and
     # rust-cache keys on that file, so the run that introduces the profile
@@ -1133,7 +1148,7 @@ jobs:
 
   audit:
     name: Cargo Audit
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'self-hosted' }}
+    runs-on: ${{ (github.repository_owner != 'opencrabs' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork)) && 'ubuntu-latest' || 'self-hosted' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -1293,7 +1308,7 @@ jobs:
     # On the Mac, where tarpaulin finishes the whole suite in ~15 min. A
     # hosted runner needed well over 30 for the same work and cost minutes
     # for it, which is not a trade worth making for a metric job.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'self-hosted' }}
+    runs-on: ${{ (github.repository_owner != 'opencrabs' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork)) && 'ubuntu-latest' || 'self-hosted' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -1385,7 +1400,7 @@ jobs:
     # the paragraph above: same class of finding (Windows-specific) at a
     # python-pass cost, so blocking on it buys certainty for seconds.
     needs: [lint, build, test, test-linux, audit, windows-footguns]
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'self-hosted' }}
+    runs-on: ${{ (github.repository_owner != 'opencrabs' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork)) && 'ubuntu-latest' || 'self-hosted' }}
     steps:
       - name: Check results
         run: |
