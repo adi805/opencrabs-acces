@@ -74,6 +74,22 @@ public class MainActivity extends Activity {
     private TextView exitFull;
     private SharedPreferences prefs;
 
+    /**
+     * The one worker that copies picked files, shared across activity instances.
+     *
+     * <p>A thread per pick let two same-named files race for one destination, and each
+     * thread streamed a whole file at once, so ten picks meant ten concurrent copies of
+     * ten files. One serial worker makes the imports queue instead, and a static one
+     * survives a rotation: the queue belongs to the process, not to the activity that
+     * filled it, so turning the screen does not abandon a copy half-written.
+     */
+    private static final java.util.concurrent.ExecutorService ATTACH_IMPORTS =
+        java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+            Thread worker = new Thread(r, "crabs-attach");
+            worker.setDaemon(true);
+            return worker;
+        });
+
     /** True while the IME is up, i.e. while the title bar earns its space back. */
     private boolean typing;
 
@@ -514,13 +530,13 @@ public class MainActivity extends Activity {
         if (uri == null) {
             return;
         }
-        // The copy runs on a worker, not here. This callback is on the main thread,
-        // and importToHome() streams the whole file: a large video, or a document
+        // The copy runs on the shared worker, not here. This callback is on the main
+        // thread, and importToHome() streams the whole file: a large video, or a document
         // that a cloud provider has to download first, blocks drawing for its full
-        // duration and the system answers with an app-not-responding dialog. Only
-        // the prompt insert has to be on the main thread, so only that comes back.
+        // duration and the system answers with an app-not-responding dialog. Only the
+        // prompt insert has to be on the main thread, so only that comes back.
         final android.content.Context app = getApplicationContext();
-        new Thread(() -> {
+        ATTACH_IMPORTS.execute(() -> {
             final String marker = Attachments.importToHome(app, uri);
             runOnUiThread(() -> {
                 if (marker == null) {
@@ -531,7 +547,7 @@ public class MainActivity extends Activity {
                 // question, and submitting here would send the marker on its own.
                 pane.sendText(marker + " ");
             });
-        }, "crabs-attach").start();
+        });
     }
 
     private void startSession() {

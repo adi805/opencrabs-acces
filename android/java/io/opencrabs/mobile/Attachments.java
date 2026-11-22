@@ -47,8 +47,18 @@ final class Attachments {
             Log.e(TAG, "cannot create " + dir.getAbsolutePath());
             return null;
         }
-        File target = uniqueTarget(dir, name);
+        File target = reserveTarget(dir, name);
+        if (target == null) {
+            Log.e(TAG, "no free name for " + name + " in " + dir.getAbsolutePath());
+            return null;
+        }
         if (!copy(context, uri, target)) {
+            // copy() deletes the file when the stream throws, but it returns before that
+            // when the provider hands back no stream at all. The name is reserved by
+            // then, so without this an empty file would sit there looking like an
+            // attachment the agent can read.
+            //noinspection ResultOfMethodCallIgnored
+            target.delete();
             return null;
         }
         String path = target.getAbsolutePath();
@@ -116,10 +126,20 @@ final class Attachments {
         return cleaned;
     }
 
-    /** Never overwrite an earlier attachment: the agent may still be reading it. */
-    private static File uniqueTarget(File dir, String name) {
+    /**
+     * Reserve a free name by creating it, so two imports cannot pick the same path.
+     *
+     * <p>{@link File#exists()} only reports what is already on disk, so two workers that
+     * both look before either writes choose the same name, and the second
+     * {@code FileOutputStream} truncates the first one's bytes. {@code createNewFile()}
+     * asks the filesystem to create the file only if it is absent, in one step, so the
+     * loser of that race moves to the next candidate instead of overwriting.
+     *
+     * @return the reserved and still empty file, or null when no name could be reserved
+     */
+    private static File reserveTarget(File dir, String name) {
         File candidate = new File(dir, name);
-        if (!candidate.exists()) {
+        if (reserve(candidate)) {
             return candidate;
         }
         int dot = name.lastIndexOf('.');
@@ -127,11 +147,24 @@ final class Attachments {
         String extension = dot > 0 ? name.substring(dot) : "";
         for (int i = 2; i < 1000; i++) {
             candidate = new File(dir, stem + "-" + i + extension);
-            if (!candidate.exists()) {
+            if (reserve(candidate)) {
                 return candidate;
             }
         }
-        return new File(dir, System.currentTimeMillis() + extension);
+        // Every numbered name is taken; a timestamp is not something another worker
+        // computes, so this last attempt is a fresh collision only if two imports land
+        // in the same millisecond and the first one already created its file.
+        candidate = new File(dir, System.currentTimeMillis() + extension);
+        return reserve(candidate) ? candidate : null;
+    }
+
+    private static boolean reserve(File candidate) {
+        try {
+            return candidate.createNewFile();
+        } catch (java.io.IOException e) {
+            Log.w(TAG, "cannot reserve " + candidate.getAbsolutePath(), e);
+            return false;
+        }
     }
 
     private static boolean copy(Context context, Uri uri, File target) {
