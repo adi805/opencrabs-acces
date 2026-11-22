@@ -47,7 +47,7 @@ MIN_SDK=26
 # is: as two bare literals they can drift, and a versionCode that does not
 # increase is not a cosmetic bug, it is an APK Android refuses to install over
 # the previous one.
-VERSION_CODE=11
+VERSION_CODE=12
 VERSION_NAME=0.6.0
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

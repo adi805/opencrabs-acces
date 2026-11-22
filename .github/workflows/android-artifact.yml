@@ -10,15 +10,16 @@ name: Android binary (artifact)
 # other work in flight, and a new path cannot conflict with it or restart its
 # runs. Same rationale as linux-artifact.yml and windows-artifact.yml.
 #
-# Scope: core plus `telegram` (--no-default-features --features
-# rtk,code-graph,telegram). `telegram` is not a preference: the crate does not
-# compile without it. src/channels/target_resolver.rs, src/brain/tools/trait.rs,
-# src/cli/ui.rs and src/tui/app/dialogs.rs reference channels::telegram
-# unconditionally, and dialogs.rs pairs a Result<(), String> stub with a call
-# site that reads `.detected_user_id`, so `--no-default-features` without it
-# fails with E0433/E0609. Upstream CI only ever builds --all-features, which is
-# why the hole is invisible there. teloxide is pure Rust and the Android target
-# already vendors openssl-sys for reqwest's native-tls, so it cross-compiles.
+# Scope: core plus `rtk` and `code-graph` (--no-default-features --features
+# rtk,code-graph). `telegram` used to be in this list for one reason only: the
+# crate did not compile without it. src/channels/target_resolver.rs,
+# src/brain/tools/trait.rs, src/cli/ui.rs and src/tui/app/dialogs.rs referenced
+# channels::telegram unconditionally, and dialogs.rs paired a Result<(), String>
+# stub with a call site that reads `.detected_user_id`, so the flag-less build
+# failed with E0433/E0609. Those sites are now either ungated (GENERAL_TOPIC_ID
+# lives in src/channels/mod.rs) or feature-gated, so the Android build no longer
+# links teloxide at all. Upstream CI only ever builds --all-features, which is
+# why the hole was invisible there.
 # The other channels stay excluded (Android PRD decision, 2026-10-06 05:25):
 # serenity, whatsapp-rust, chromey, pdfium and the ALSA-backed voice features
 # do not cross-compile to Android without extra native libs.
@@ -199,7 +200,7 @@ jobs:
         run: >
           cargo ndk -t arm64-v8a -P 24
           build --profile ci
-          --no-default-features --features rtk,code-graph,telegram
+          --no-default-features --features rtk,code-graph
 
       - name: Smoke (prove it is an Android arm64 ELF)
         shell: bash
