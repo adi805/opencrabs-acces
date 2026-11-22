@@ -32,11 +32,13 @@
 //! right trade against dragging in an async runtime for file I/O.
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use axum::Json;
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, FromRequestParts, State};
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
@@ -160,20 +162,40 @@ pub async fn pair_rate_limit(
     next.run(req).await
 }
 
+/// The socket peer, when the router was served with connect info.
+///
+/// A handler argument has to be a `FromRequestParts` extractor, and axum's
+/// `ConnectInfo<T>` has no `OptionalFromRequestParts`, so `Option<ConnectInfo>`
+/// is not a valid argument and does not compile. Unit tests build the router
+/// without connect info, so this yields `None` instead of rejecting.
+struct MaybePeer(Option<SocketAddr>);
+
+impl<S: Send + Sync> FromRequestParts<S> for MaybePeer {
+    type Rejection = Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|ci| ci.0),
+        ))
+    }
+}
+
 /// POST /a2a/pair — exchange a one-time code for a scoped session token.
 /// Rate limiting happens in [`pair_rate_limit`], before this handler.
 ///
 /// The same trust-derived client key that buckets the rate limit also keys the
 /// failure streak, so an attacker burning guesses locks only their own bucket.
-/// `ConnectInfo` is optional because unit tests build the router without it;
-/// `client_key` then falls back to the forwarded header, then to `"direct"`.
+/// `client_key` falls back to the forwarded header, then to `"direct"`.
 pub async fn handle_pair(
     State(state): State<A2aState>,
-    peer: Option<ConnectInfo<SocketAddr>>,
+    peer: MaybePeer,
     headers: HeaderMap,
     Json(body): Json<PairRequest>,
 ) -> Response {
-    let client = client_key(&headers, peer.map(|ci| ci.0));
+    let client = client_key(&headers, peer.0);
     match state.pairing.verify_code(&body.code, &body.label, &client) {
         Ok((token, session)) => {
             tracing::info!(label = %session.label, session = %session.id, "A2A pairing: session issued");
