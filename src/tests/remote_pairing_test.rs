@@ -70,13 +70,23 @@ fn mint_gives_up_when_every_candidate_collides() {
     let (_d, st) = store();
     let existing = st.mint_code(&full_scopes()).unwrap();
     let colliding = existing.clone();
+    let mut draws = 0u8;
 
     let err = st
-        .mint_code_drawn(&full_scopes(), TOKEN_TTL_SECS, || colliding.clone())
+        .mint_code_drawn(&full_scopes(), TOKEN_TTL_SECS, || {
+            draws += 1;
+            colliding.clone()
+        })
         .expect_err("every candidate collides");
     assert!(
         err.to_string().contains("collisions"),
         "unexpected error: {err}"
+    );
+    // The bound is what keeps a broken RNG from spinning under the store
+    // lock, so the retry count itself is part of the contract.
+    assert_eq!(
+        draws, MINT_RETRIES,
+        "the mint must stop after MINT_RETRIES draws"
     );
 
     // A failed mint must leave the stored grants exactly as they were.
