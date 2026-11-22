@@ -2,8 +2,8 @@
 //! hashed-at-rest tokens, revocation, permissions, sweep, corruption.
 
 use crate::remote::pairing::{
-    CODE_ALPHABET, CODE_LEN, GUEST_TTL_SECS, MAX_FAIL_STREAK, PairingStore, TOKEN_PREFIX,
-    TOKEN_TTL_SECS, VerifyError, parse_ttl, sha_b64,
+    CODE_ALPHABET, CODE_LEN, GUEST_TTL_SECS, MAX_FAIL_STREAK, MINT_RETRIES, PairingStore,
+    TOKEN_PREFIX, TOKEN_TTL_SECS, VerifyError, parse_ttl, sha_b64,
 };
 use crate::remote::scopes::{SCOPE_READ, SCOPE_SEND};
 #[cfg(unix)]
@@ -41,6 +41,55 @@ fn mint_returns_8_char_alphabet_codes_unique() {
         );
         assert!(seen.insert(c), "duplicate code minted");
     }
+}
+
+#[test]
+fn mint_redraws_when_a_candidate_collides() {
+    let (_d, st) = store();
+    let read_only = vec![SCOPE_READ.to_string()];
+    let existing = st.mint_code(&read_only).unwrap();
+
+    // First candidate is the text already in the store, the second is free.
+    // Without the guard the colliding text would be accepted, and
+    // `verify_code`'s first match would redeem the other grant.
+    let mut seq = vec![existing.clone(), "FREECODE".to_string()].into_iter();
+    let fresh = st
+        .mint_code_drawn(&full_scopes(), TOKEN_TTL_SECS, || {
+            seq.next().expect("candidate")
+        })
+        .expect("a colliding draw must be retried, not accepted");
+    assert_eq!(fresh, "FREECODE");
+
+    // The grant already on file is untouched by the retry.
+    let (_t, session) = st.verify_code(&existing, "first", "c").expect("original");
+    assert_eq!(session.scopes, read_only);
+}
+
+#[test]
+fn mint_gives_up_when_every_candidate_collides() {
+    let (_d, st) = store();
+    let existing = st.mint_code(&full_scopes()).unwrap();
+    let colliding = existing.clone();
+
+    let err = st
+        .mint_code_drawn(&full_scopes(), TOKEN_TTL_SECS, || colliding.clone())
+        .expect_err("every candidate collides");
+    assert!(
+        err.to_string().contains("collisions"),
+        "unexpected error: {err}"
+    );
+
+    // A failed mint must leave the stored grants exactly as they were.
+    let raw = read_raw(&st);
+    assert_eq!(
+        raw["codes"].as_array().unwrap().len(),
+        1,
+        "a failed mint must not add a code"
+    );
+    assert!(
+        st.verify_code(&existing, "still-here", "c").is_ok(),
+        "the pre-existing code must still redeem"
+    );
 }
 
 #[test]
@@ -196,6 +245,41 @@ fn legacy_global_lock_still_blocks_every_client() {
             Err(VerifyError::Locked { .. })
         ),
         "a global locked_until must refuse every client"
+    );
+}
+
+#[test]
+fn an_idle_streak_does_not_count_toward_a_new_lock() {
+    let (_d, st) = store();
+    let code = st.mint_code(&full_scopes()).unwrap();
+
+    // Nine failures, then silence for longer than a lockout. `sweep` would
+    // drop this entry, but only once some other write touches the store, so a
+    // lone client must expire its own count instead of carrying it forward.
+    let mut raw = read_raw(&st);
+    raw["fail_streaks"] = serde_json::json!({
+        "203.0.113.9": {
+            "streak": MAX_FAIL_STREAK - 1,
+            "locked_until": serde_json::Value::Null,
+            "last_seen": 1u64,
+        }
+    });
+    write_raw(&st, &raw);
+
+    // The tenth guess of a stale streak must not trip the lock.
+    assert!(matches!(
+        st.verify_code("NOPE1234", "x", "203.0.113.9"),
+        Err(VerifyError::NoMatch)
+    ));
+    let raw = read_raw(&st);
+    assert_eq!(
+        raw["fail_streaks"]["203.0.113.9"]["streak"],
+        serde_json::json!(1),
+        "the count must restart, not resume"
+    );
+    assert!(
+        st.verify_code(&code, "phone", "203.0.113.9").is_ok(),
+        "an idle client must not be locked by old mistakes"
     );
 }
 

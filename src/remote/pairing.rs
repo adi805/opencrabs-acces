@@ -79,6 +79,16 @@ fn random_bytes<const N: usize>() -> [u8; N] {
     buf
 }
 
+/// One random candidate pairing code. Kept separate from the mint loop so a
+/// test can substitute a fixed sequence and reach the collision branch, which
+/// 40 bits of entropy otherwise makes effectively unreachable.
+fn draw_code() -> String {
+    random_bytes::<8>()
+        .iter()
+        .map(|b| CODE_ALPHABET[(b & 31) as usize] as char)
+        .collect()
+}
+
 fn sanitize_label(label: &str) -> String {
     let cleaned: String = label
         .trim()
@@ -316,6 +326,18 @@ impl PairingStore {
     /// shape it is issued into, and zero is refused rather than minting a
     /// code that redeems into an already-dead token.
     pub fn mint_code_with_ttl(&self, scopes: &[String], session_ttl_secs: u64) -> Result<String> {
+        self.mint_code_drawn(scopes, session_ttl_secs, draw_code)
+    }
+
+    /// [`Self::mint_code_with_ttl`] with the candidate source injected.
+    /// Production passes [`draw_code`]; a test passes a fixed sequence so the
+    /// collision branch is exercised deterministically.
+    pub(crate) fn mint_code_drawn(
+        &self,
+        scopes: &[String],
+        session_ttl_secs: u64,
+        mut draw: impl FnMut() -> String,
+    ) -> Result<String> {
         if scopes.is_empty() {
             anyhow::bail!("a pairing code must carry at least one scope");
         }
@@ -345,10 +367,7 @@ impl PairingStore {
             // would let `verify_code`'s first match redeem the wrong grant.
             let mut drawn: Option<(String, String)> = None;
             for _ in 0..MINT_RETRIES {
-                let candidate: String = random_bytes::<8>()
-                    .iter()
-                    .map(|b| CODE_ALPHABET[(b & 31) as usize] as char)
-                    .collect();
+                let candidate = draw();
                 let candidate_hash = sha_b64(&candidate);
                 if !st.codes.iter().any(|c| c.code_hash == candidate_hash) {
                     drawn = Some((candidate, candidate_hash));
@@ -410,6 +429,14 @@ impl PairingStore {
                 // before `st.codes` is touched below.
                 let client_locked = {
                     let entry = st.fail_streaks.entry(client.clone()).or_default();
+                    // A streak that has gone cold is history. Without this, nine
+                    // failures from hours ago plus one new guess would trip the
+                    // lock on a client whose count should have started over:
+                    // `sweep` would drop the entry, but only once some other
+                    // write touches the store, so it cannot be relied on here.
+                    if now.saturating_sub(entry.last_seen) > LOCKOUT_SECS {
+                        entry.streak = 0;
+                    }
                     entry.last_seen = now;
                     match entry.locked_until {
                         Some(until) if now < until => Some(until),
