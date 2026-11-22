@@ -459,12 +459,24 @@ async fn pair_rate_limit_returns_429() {
 }
 
 #[tokio::test]
-async fn store_lockout_surfaces_as_429_across_ips() {
+async fn a_stranger_cannot_lock_the_host() {
     let dir = tempfile::tempdir().unwrap();
     let state = state_with(Some("cfg-key"), dir.path()).await;
+    let store = PairingStore::new(dir.path().join("pairing.json"));
     let app = build_router(state, &[]);
-    // Fresh client IP per attempt keeps the rate limiter out of the way,
-    // so the 429 below can only come from the store's global lockout.
+
+    // Minted before the noise: if anything below locks pairing, this live code
+    // can no longer be redeemed, and the owner is the one who got locked out.
+    let code = store.mint_code(&[SCOPE_READ.to_string()]).expect("mint");
+
+    // Eleven distinct clients, one wrong guess each. A fresh client IP per
+    // attempt keeps the per-client rate limiter out of the way, so a 429 here
+    // could only come from the store's lockout - and the store used to keep ONE
+    // fail streak for the whole host, so the tenth stranger's miss locked
+    // pairing for everybody and the eleventh got 429 without ever guessing.
+    // Holding the tunnel URL and a botnet was enough to deny the owner's own
+    // pairing. Each client owns its streak now, so these are eleven plain
+    // misses that lock nobody.
     for i in 0..11 {
         let (status, body) = call(
             app.clone(),
@@ -474,9 +486,22 @@ async fn store_lockout_surfaces_as_429_across_ips() {
             Some(&format!("10.0.0.{i}")),
         )
         .await;
-        if i == 10 {
-            assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
-            assert!(body["error"].as_str().unwrap().contains("locked"));
-        }
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {i}: {body}");
     }
+
+    // The receipt: a client that never guessed still redeems the code, so the
+    // noise above locked nothing. This is the assertion the old test inverted.
+    let (status, body) = call(
+        app.clone(),
+        "/a2a/pair",
+        serde_json::json!({"code": code, "label": "test-client"}),
+        None,
+        Some("10.0.0.99"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "the host must still pair: {body}");
+    assert!(
+        body["token"].as_str().is_some_and(|t| !t.is_empty()),
+        "pair must mint a token: {body}"
+    );
 }
