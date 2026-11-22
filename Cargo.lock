@@ -7321,6 +7321,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "once_cell",
+ "openssl-sys",
  "opusic-sys 0.5.8",
  "pdf-extract",
  "pdfium-render",
