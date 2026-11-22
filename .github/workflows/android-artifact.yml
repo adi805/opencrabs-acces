@@ -1,0 +1,499 @@
+name: Android binary (artifact)
+
+# Why this file exists: milestone 1 of the Android client needs proof that the
+# core crate cross-compiles to aarch64-linux-android and links against Bionic.
+# Nothing in the repo produces that binary today: ci.yml compiles and tests on
+# Linux, windows-artifact.yml ships an exe, linux-artifact.yml ships a Linux
+# binary. The Android leg is the missing hand-off.
+#
+# Deliberately a NEW file rather than a step in ci.yml: ci.yml is edited by
+# other work in flight, and a new path cannot conflict with it or restart its
+# runs. Same rationale as linux-artifact.yml and windows-artifact.yml.
+#
+# Scope: core plus `rtk` and `code-graph` (--no-default-features --features
+# rtk,code-graph). `telegram` used to be in this list for one reason only: the
+# crate did not compile without it. src/channels/target_resolver.rs,
+# src/brain/tools/trait.rs, src/cli/ui.rs and src/tui/app/dialogs.rs referenced
+# channels::telegram unconditionally, and dialogs.rs paired a Result<(), String>
+# stub with a call site that reads `.detected_user_id`, so the flag-less build
+# failed with E0433/E0609. Those sites are now either ungated (GENERAL_TOPIC_ID
+# lives in src/channels/mod.rs) or feature-gated, so the Android build no longer
+# links teloxide at all. Upstream CI only ever builds --all-features, which is
+# why the hole was invisible there.
+# The other channels stay excluded (Android PRD decision, 2026-10-06 05:25):
+# serenity, whatsapp-rust, chromey, pdfium and the ALSA-backed voice features
+# do not cross-compile to Android without extra native libs.
+#
+# It deliberately does NOT dispatch release.yml: that file carries
+# `publish-crate` (a live crates.io push) and `create-release`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      # Sign with the committed debug key instead of the release key. A phone
+      # that already runs a debug-signed install cannot switch to a differently
+      # signed APK: Android fails it with INSTALL_FAILED_UPDATE_INCOMPATIBLE,
+      # and the only other ways out are uninstalling first (which deletes
+      # config.toml and keys.toml) or rotating the install key.
+      debug_sign:
+        description: "Sign with the committed debug key instead of the release key."
+        required: false
+        type: boolean
+        default: false
+  # Reusable so release-fork.yml can build the APK at the tag being published.
+  # Without this the release workflow has no way to produce an Android asset,
+  # and the only alternative is attaching an APK that some earlier branch run
+  # happened to leave behind, which is an artifact of unknown commit.
+  workflow_call:
+    # release-fork.yml can be dispatched with a `tag` input, and in that case
+    # github.ref is the BRANCH the dispatch ran from, not the tag. A reusable
+    # workflow always checks out the caller's ref, so without this input the
+    # release would publish an APK built from whatever happened to be on that
+    # branch while the Linux archives came from the tag: two different trees
+    # under one version, and both checksums valid. Pass the tag through.
+    inputs:
+      ref:
+        description: "Git ref to build from. Empty means the caller's ref."
+        required: false
+        type: string
+        default: ""
+      debug_sign:
+        description: "Sign with the committed debug key instead of the release key."
+        required: false
+        type: boolean
+        default: false
+    # Declared so the caller can pass the signing material by name. The
+    # alternative, `secrets: inherit` in release-fork.yml, hands this workflow
+    # every secret the repo owns and Semgrep rejects it outright as
+    # yaml.github-actions.security.secrets-inherit. required:false keeps the
+    # push and workflow_dispatch triggers working: those are not called by
+    # anyone, so nothing is passed and the env block reads the repo secrets
+    # directly.
+    secrets:
+      ANDROID_KEYSTORE_B64:
+        description: "Base64 encoded PKCS12 release keystore."
+        required: false
+      ANDROID_KEYSTORE_PASS:
+        description: "Password for the release keystore."
+        required: false
+      ANDROID_KEY_ALIAS:
+        description: "Alias of the release key inside the keystore."
+        required: false
+  push:
+    # main is included so the downloadable artifact tracks the branch that
+    # ships. Without it the APK stays whatever the last feat-branch run
+    # produced, and a user can install a build that predates a fix already on
+    # main: that happened on 2026-10-06, when the APK on disk was built before
+    # the Process.pid() crash fix merged.
+    #
+    # Path-filtered because this job builds two Rust targets and stages an APK
+    # (~30 min), so it must not fire on changes that cannot affect the Android
+    # client. Same filter android-emulator-smoke.yml uses.
+    #
+    # src/** and the manifests ARE in the filter: the APK is not only the
+    # Android shell, it bundles a core built from this repo (cargo ndk below,
+    # renamed to libopencrabs.so and staged into the APK), so a core change
+    # alters the shipped artifact while touching nothing under android/. That
+    # omission is what let the on-disk APK predate a merged core fix.
+    # android_workflow_paths_test asserts these stay in the filter.
+    branches: [main, feat/android-artifact, feat/android-apk]
+    paths:
+      - 'android/**'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/scripts/android-emulator-smoke.sh'
+      - '.github/workflows/android-artifact.yml'
+  # A pull request that touches the Android shell gets a compile verdict
+  # before it lands. `android/assemble-apk.sh` is the only thing in CI that
+  # runs javac + d8, and until this trigger existed a Java change reached main
+  # uncompiled: the push trigger above only fires after the merge.
+  #
+  # Deliberately narrower than push. `src/**` is NOT listed, because a
+  # core-only PR would then pay the full Android build (two Rust targets plus a
+  # staged APK, 90 minute cap) for an artifact it cannot change. Only files
+  # that reach the APK's Java or its packaging script are here.
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-artifact.yml'
+
+jobs:
+  android-arm64:
+    name: Build Android arm64 binary
+    # Pinned, not ubuntu-latest: the NDK/clang pair this links with is part of
+    # the contract, so keep it explicit instead of inheriting a roll.
+    runs-on: ubuntu-24.04
+    # Cold, this is a full --locked cargo build plus a vendored OpenSSL source
+    # build (the android-only dep in Cargo.toml). Warm from rust-cache it lands
+    # far lower. Generous on purpose: a cap that clips a green build costs a
+    # whole cycle, which is the bug that rode ci.yml's macOS job until #50.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install Rust (pinned by rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+
+      # The action above installs `stable`, but cargo does not run on stable
+      # here: rust-toolchain.toml pins 1.98.1 and rustup switches to it on
+      # first use. A `targets:` entry on the action therefore lands on the
+      # wrong toolchain, and the build dies before compiling anything with
+      #   error[E0463]: can't find crate for `core`
+      #   = note: the `aarch64-linux-android` target may not be installed
+      # (run 44622012349, 2026-11-19). Install the target on the toolchain the
+      # repo actually pins, resolved at run time so the next bump keeps
+      # working instead of silently re-breaking this step.
+      - name: Install the Android target for the pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! tc="$(rustup show active-toolchain 2>/dev/null | cut -d' ' -f1)" || [ -z "$tc" ]; then
+            ch="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+            rustup toolchain install "$ch" --profile minimal
+            tc="$(rustup show active-toolchain | cut -d' ' -f1)"
+          fi
+          echo "pinned toolchain: $tc"
+          rustup target add aarch64-linux-android --toolchain "$tc"
+          rustup target list --installed --toolchain "$tc" | grep -qx aarch64-linux-android
+          echo "aarch64-linux-android verified on $tc"
+
+      - name: Set up Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
+        with:
+          ndk-version: r27d
+          # cargo-ndk reads ANDROID_NDK_HOME, so keep the NDK off PATH and
+          # hand the path over explicitly instead of guessing at PATH order.
+          add-to-path: false
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      # No `save-if` restriction: this job runs on PRs and workflow_dispatch
+      # only, so a refs/heads/main-only save-if would never fire and the cache
+      # would stay cold forever (the bug #50 fixed in ci.yml).
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: true
+
+      # --locked, and the lock carries openssl-src: the android-only openssl-sys
+      # dep enables its `vendored` feature, which builds OpenSSL from source, so
+      # resolution needs that package. It is committed now (300.6.1+3.6.3, the
+      # version cargo picked here), and this build is the check that it stays
+      # committed: a dependency that only appears at build time is a lock file
+      # that lies, and every other workflow already builds with --locked.
+      - name: Build (core only, channels excluded)
+        env:
+          # Both names, because the runner image preinstalls an NDK and exports
+          # ANDROID_NDK_ROOT pointing at it, while cargo-ndk reads
+          # ANDROID_NDK_HOME. Left as-is they disagree and cargo-ndk logs a
+          # mismatch warning on every run.
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        # Capital -P pins the API level (Android 7.0). Lowercase -p is NOT the
+        # platform flag: cargo-ndk's is -P, and a lowercase -p is read as
+        # cargo's --package, which made the first run panic with
+        # "unknown package: 24" before it compiled anything.
+        run: >
+          cargo ndk -t arm64-v8a -P 24
+          build --locked --profile ci
+          --no-default-features --features rtk,code-graph
+
+      - name: Smoke (prove it is an Android arm64 ELF)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=target/aarch64-linux-android/ci/opencrabs
+          ls -l "$bin"
+          file "$bin"
+          # The artifact is only worth shipping if the header says AArch64 and
+          # the dynamic section names Bionic's libs. This cannot execute here
+          # (it is an Android ELF), so the header and NEEDED list ARE the
+          # evidence.
+          readelf -h "$bin" | grep -E "Class:|Machine:|OS/ABI:"
+          readelf -d "$bin" | grep -E "NEEDED" || true
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: opencrabs-android-arm64
+          path: target/aarch64-linux-android/ci/opencrabs
+          if-no-files-found: error
+          retention-days: 30
+
+  # Wraps the binary from the job above into an installable APK.
+  #
+  # This is the packaging proof for the Android client: it answers the one
+  # question the build job cannot, namely whether the core can be shipped in a
+  # form Android will actually execute. The rule that shapes it: since Android
+  # 10 (API 29) W^X is enforced on the app data directory, so a binary cannot
+  # be exec'd from filesDir. The native library directory is the one place the
+  # loader will execute from, and the package manager only extracts entries
+  # named lib*.so - hence the rename to libopencrabs.so in assemble-apk.sh.
+  #
+  # Separate job, not a step: if the packaging step breaks it must not take the
+  # binary artifact down with it. Both are uploaded regardless.
+  android-apk:
+    name: Assemble debug APK
+    needs: android-arm64
+    # Same image as the build job so the NDK lookup for libc++_shared.so
+    # matches the one that produced the binary.
+    runs-on: ubuntu-24.04
+    # No compilation here: javac + d8 + aapt2 + apksigner.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Fetch the core binary built above
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: opencrabs-android-arm64
+          path: apk-input
+
+      - name: Set up Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
+        with:
+          ndk-version: r27d
+          add-to-path: false
+
+      - name: Assemble the APK
+        env:
+          # Both names: the runner image preinstalls an NDK and exports
+          # ANDROID_NDK_ROOT, while the script reads either.
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          # Release certificate from repo secrets. Without these the script
+          # falls back to the committed debug key, and Play Protect blocks
+          # debug-signed installs on real phones (v0.2.1, 2026-10-24).
+          # A debug_sign build MUST be debug-signed: the phone already runs a
+          # debug-signed install, and Android refuses to replace an app whose
+          # certificate changed (INSTALL_FAILED_UPDATE_INCOMPATIBLE, shown to
+          # the user as "App not installed"). Blanking these three is what
+          # makes assemble-apk.sh fall back to android/debug.keystore.
+          ANDROID_KEYSTORE_B64: ${{ !inputs.debug_sign && secrets.ANDROID_KEYSTORE_B64 || '' }}
+          ANDROID_KEYSTORE_PASS: ${{ !inputs.debug_sign && secrets.ANDROID_KEYSTORE_PASS || '' }}
+          ANDROID_KEY_ALIAS: ${{ !inputs.debug_sign && secrets.ANDROID_KEY_ALIAS || '' }}
+        run: bash android/assemble-apk.sh apk-input/opencrabs
+
+      # The APK is now a terminal client, not just a daemon shell: it carries a
+      # third native library (the PTY bridge) and the vendored terminal
+      # emulator's Java classes. assemble-apk.sh asserts the three libs itself,
+      # but a missing Java class cannot fail that script (javac + d8 succeed
+      # either way when a source file is simply absent from the compile list).
+      # That failure mode is silent and lands as NoClassDefFoundError on a
+      # phone, so it is checked here, against the packed artifact.
+      - name: Assert the APK carries the PTY bridge and the terminal emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=android/out/opencrabs-release.apk
+          if [ ! -f "$APK" ]; then
+            echo "::error::APK not found at $APK (the assemble step did not produce it)"
+            exit 1
+          fi
+          echo "apk: $APK ($(stat -c%s "$APK") bytes)"
+
+          # Native side: the PTY bridge is per-ABI, so assert it for the ABI
+          # this job built rather than for a hardcoded list.
+          #
+          # The listing is captured once and matched with a here-string. Piping
+          # into `grep -q` is not equivalent under `pipefail`: grep exits at the
+          # first match, the producer then dies of SIGPIPE, and the pipeline
+          # reports 141, so a library that IS present reads as missing.
+          LISTING="$(unzip -l "$APK")"
+          printf '%s\n' "$LISTING" | grep -E 'lib/[^/]+/lib.*\.so' || true
+          if ! grep -qF 'lib/arm64-v8a/libopencrabspty.so' <<< "$LISTING"; then
+            echo "::error::libopencrabspty.so is missing from the APK: the PTY JNI would throw UnsatisfiedLinkError on first fork, so the terminal can never spawn"
+            exit 1
+          fi
+          echo "lib/arm64-v8a/libopencrabspty.so: present"
+
+          # Java side: the terminal emulator lives in its own package and is
+          # reached only through TerminalPane, so assert the exact type
+          # descriptors instead of a loose substring that a comment could hit.
+          # dex string data carries the descriptor verbatim, which is why
+          # `strings` on the dex is enough: no dexdump and no extra tooling.
+          DEXDIR="$(mktemp -d)"
+          unzip -o -q "$APK" 'classes*.dex' -d "$DEXDIR"
+          DEXES="$(find "$DEXDIR" -name 'classes*.dex' | sort)"
+          echo "dex files: $(printf '%s ' $DEXES)"
+          STRINGS="$(cat $DEXES | strings)"
+          MISSING=""
+          for type in \
+            Lcom/termux/terminal/TerminalEmulator\; \
+            Lcom/termux/terminal/TerminalSession\; \
+            Lcom/termux/terminal/TerminalBuffer\; \
+            Lio/opencrabs/mobile/TerminalPane\; \
+            Lio/opencrabs/mobile/Pty\;
+          do
+            # Here-string, not a pipe: `grep -q` stops reading at the match, and
+            # under pipefail the resulting SIGPIPE on the producer turns a
+            # present class into a failed check.
+            if grep -qF "$type" <<< "$STRINGS"; then
+              echo "  ok: $type"
+            else
+              echo "  MISSING: $type"
+              MISSING="$MISSING $type"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::the APK is missing terminal classes:$MISSING. The compile list in assemble-apk.sh decides what reaches the dex, so a class that is not listed here is a class that does not ship."
+            exit 1
+          fi
+          echo "terminal emulator and PTY bridge classes: all present"
+
+      - name: Assert the APK carries a launcher icon and the boot receiver
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=android/out/opencrabs-release.apk
+          echo "build mode: single variant"
+
+          # The icon is a resource, so it is invisible to the dex check above: a
+          # build with an empty android/res and no android:icon attribute installs
+          # fine and silently shows the default Android robot on the launcher.
+          # badging is the assertion that matters, because it reports the icon the
+          # MANIFEST resolved, not merely that a file exists in the zip.
+          AAPT2="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools" -maxdepth 2 -name aapt2 -type f 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$AAPT2" ]; then
+            echo "::error::no aapt2 under the SDK, cannot verify the icon"
+            exit 1
+          fi
+          echo "aapt2: $AAPT2"
+          BADGING="$("$AAPT2" dump badging "$APK" 2>/dev/null || true)"
+          printf '%s\n' "$BADGING" | grep -E '^(package|application):' || true
+
+          if ! grep -qE "^application:.*icon='" <<< "$BADGING"; then
+            echo "::error::the manifest resolved no launcher icon. Check android:icon on <application> and that assemble-apk.sh passes -R android/res to aapt2 link."
+            exit 1
+          fi
+          echo "launcher icon: resolved by the manifest"
+
+          # The round icon is a separate attribute and easy to forget, so assert
+          # it independently rather than assuming it follows the square one.
+          if grep -qE "roundIcon='" <<< "$BADGING"; then
+            echo "round icon: resolved"
+          else
+            echo "::warning::no roundIcon resolved; round-mask launchers will fall back to the square icon"
+          fi
+
+          # BootReceiver only reaches the dex if assemble-apk.sh's source glob
+          # picks it up, and without it the core never returns after a reboot
+          # even though the manifest declares the filter.
+          DEXDIR="$(mktemp -d)"
+          unzip -o -q "$APK" 'classes*.dex' -d "$DEXDIR"
+          STRINGS="$(cat "$DEXDIR"/classes*.dex | strings)"
+          if ! grep -qF 'Lio/opencrabs/mobile/BootReceiver;' <<< "$STRINGS"; then
+            echo "::error::BootReceiver is not in the dex: start-on-boot would be dead code and the core would never return after a reboot."
+            exit 1
+          fi
+          echo "BootReceiver: present in the dex"
+
+          # The automation bridge has two failure modes that both build fine:
+          # a class missing from the dex (the source glob or the compile list
+          # dropped it), and the manifest drift checked below. The classes are
+          # asserted because neither shows up as a build error.
+          for CLS in AutomationServer ShellBridge ShellAutomation; do
+            if ! grep -qF "Lio/opencrabs/mobile/${CLS};" <<< "$STRINGS"; then
+              echo "::error::${CLS} is not in the dex: the automation bridge would be missing at runtime."
+              exit 1
+            fi
+            echo "${CLS}: present in the dex"
+          done
+
+          MANIFEST_XML="$("$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml 2>/dev/null || true)"
+          if [ -z "$MANIFEST_XML" ]; then
+            # Distinguish "the dump tool failed" from "the service is missing":
+            # an empty dump means the verification itself is broken, and calling
+            # that a manifest problem would send the next reader hunting in the
+            # wrong file.
+            echo "::error::aapt2 could not dump the packaged AndroidManifest.xml, so the service declaration cannot be verified."
+            exit 1
+          fi
+          # The accessibility service is gone for good: it is the declaration
+          # Play Protect blocks on a real phone, and it used to be stripped
+          # only for the lite variant. Assert it is really absent, and assert
+          # the Shizuku provider the shell backend needs is really declared.
+          if grep -qF 'BIND_ACCESSIBILITY_SERVICE' <<< "$MANIFEST_XML"; then
+            echo "::error::the APK still declares BIND_ACCESSIBILITY_SERVICE, so Play Protect will block the install."
+            exit 1
+          fi
+          if grep -qF 'CrabsAccessibilityService' <<< "$MANIFEST_XML"; then
+            echo "::error::the APK still declares CrabsAccessibilityService."
+            exit 1
+          fi
+          if ! grep -qF 'moe.shizuku.privileged.api' <<< "$MANIFEST_XML"; then
+            echo "::error::the APK does not declare the Shizuku package in <queries>, so the shell backend can never see the Shizuku app."
+            exit 1
+          fi
+          if ! grep -qF 'ShizukuProvider' <<< "$MANIFEST_XML"; then
+            echo "::error::the APK does not declare rikka.shizuku.ShizukuProvider, so Shizuku can never hand the app its binder."
+            exit 1
+          fi
+          echo "manifest: accessibility absent, Shizuku provider declared"
+
+      # The badging and dex checks prove what the APK CONTAINS, not who
+      # signed it. If the secrets ever go missing (rotated token, moved
+      # repo, a future job that forgets `secrets: inherit`), the script
+      # falls back to the debug key WITHOUT failing, and the resulting APK
+      # is the one Play Protect blocks on the phone. Assert the signer here
+      # so that failure lands as a red CI job, not as an unexplainable
+      # install block on a user's device. Guarded on the secret being
+      # present so fork PRs without secret access keep building debug APKs.
+      - name: Assert the APK carries the release certificate
+        if: env.ANDROID_KEYSTORE_B64 != '' && !inputs.debug_sign
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          APK=android/out/opencrabs-release.apk
+          BT="$(find "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/build-tools" -maxdepth 2 -name apksigner -type f 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$BT" ]; then
+            echo "::error::no apksigner under the SDK; cannot verify who signed the APK"
+            exit 1
+          fi
+          CERTS="$("$BT" verify --print-certs "$APK" 2>/dev/null || true)"
+          printf '%s\n' "$CERTS" | grep -E 'certificate DN' || true
+          if grep -qi "Android Debug" <<< "$CERTS"; then
+            echo "::error::the APK is signed with the public Android debug key. ANDROID_KEYSTORE_B64 was empty when the APK was assembled: check the repo secret and the step env."
+            exit 1
+          fi
+          if ! grep -q "CN=OpenCrabs Release" <<< "$CERTS"; then
+            echo "::error::unexpected signer certificate. A signature this check does not recognize must be looked at, not shipped."
+            exit 1
+          fi
+          echo "signer: CN=OpenCrabs Release (private key held in repo secrets)"
+
+      - name: Assert the debug-signed build carries the debug certificate
+        if: inputs.debug_sign
+        run: |
+          set -euo pipefail
+          APK=android/out/opencrabs-release.apk
+          BT="$(find "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/build-tools" -maxdepth 2 -name apksigner -type f 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$BT" ]; then
+            echo "::error::no apksigner under the SDK; cannot verify who signed the APK"
+            exit 1
+          fi
+          CERTS="$("$BT" verify --print-certs "$APK" 2>/dev/null || true)"
+          printf '%s\n' "$CERTS" | grep -E 'certificate DN' || true
+          if ! grep -qi "Android Debug" <<< "$CERTS"; then
+            echo "::error::a debug_sign build must carry the committed debug certificate so it can replace an already installed build. Any other signer fails with INSTALL_FAILED_UPDATE_INCOMPATIBLE."
+            exit 1
+          fi
+          echo "signer: Android Debug (installs over an existing debug-signed install)"
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.debug_sign && 'opencrabs-android-apk-auto' || 'opencrabs-android-apk' }}
+          path: android/out/opencrabs-release.apk
+          if-no-files-found: error
+          retention-days: 30

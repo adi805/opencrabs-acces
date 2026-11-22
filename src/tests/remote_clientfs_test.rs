@@ -96,7 +96,9 @@ fn attach_device(
 /// Taking the subscription by value is what makes the fake client read as the
 /// device would: the engine publishes, the device's stream yields, and the
 /// request is answered on the same leg.
-async fn next_request(mut sub: crate::remote::registry::Subscription) -> Arc<crate::remote::seq::Frame> {
+async fn next_request(
+    mut sub: crate::remote::registry::Subscription,
+) -> Arc<crate::remote::seq::Frame> {
     sub.rx.recv().await.expect("fs.request frame")
 }
 
@@ -168,7 +170,10 @@ async fn read_through_namespace() {
         json!(format!("client:{device}:")),
         "the answer is labelled with the device namespace, not the engine's"
     );
-    assert_eq!(body["result"]["bytes_base64"], json!(encode_bytes(&payload)));
+    assert_eq!(
+        body["result"]["bytes_base64"],
+        json!(encode_bytes(&payload))
+    );
     assert_eq!(
         body["result"]["sha256"],
         json!(digest),
@@ -179,10 +184,8 @@ async fn read_through_namespace() {
     // CLIENT_OFFLINE at the deadline instead of hanging the request. The
     // deadline is shortened to 300 ms here so the suite stays fast; the
     // shipped default is FS_REPLY_TIMEOUT (30 s).
-    let (silent_state, silent_relay) =
-        relay_state_with_timeout(Duration::from_millis(300)).await;
-    let (silent_device, _silent_sub) =
-        attach_device(&silent_state, &silent_relay, Uuid::new_v4());
+    let (silent_state, silent_relay) = relay_state_with_timeout(Duration::from_millis(300)).await;
+    let (silent_device, _silent_sub) = attach_device(&silent_state, &silent_relay, Uuid::new_v4());
     let body = call(
         &silent_state,
         "fs/read",
@@ -248,7 +251,10 @@ async fn no_engine_side_write() {
     .await;
     client.await.expect("client task");
 
-    assert!(body.get("error").is_none(), "the write was accepted: {body}");
+    assert!(
+        body.get("error").is_none(),
+        "the write was accepted: {body}"
+    );
     assert_eq!(
         body["result"]["namespace"],
         json!(format!("client:{device}:")),
@@ -283,7 +289,10 @@ async fn unknown_namespace_lists_available() {
         json!(RPC_PATH_NAMESPACE_UNKNOWN),
         "a path with no namespace is a namespace error: {body}"
     );
-    assert_eq!(body["error"]["data"]["code"], json!("PATH_NAMESPACE_UNKNOWN"));
+    assert_eq!(
+        body["error"]["data"]["code"],
+        json!("PATH_NAMESPACE_UNKNOWN")
+    );
     assert_eq!(
         body["error"]["data"]["input"],
         json!(r"C:\Users\alice\notes.txt")
@@ -304,7 +313,10 @@ async fn unknown_namespace_lists_available() {
         format!("client:{device_c}:"),
     ];
     want.sort();
-    assert_eq!(got, want, "the refusal names every namespace that does exist");
+    assert_eq!(
+        got, want,
+        "the refusal names every namespace that does exist"
+    );
 }
 
 #[tokio::test]
@@ -328,7 +340,10 @@ async fn an_unpaired_device_is_a_namespace_error() {
         json!(RPC_PATH_NAMESPACE_UNKNOWN),
         "an unpaired device is a namespace error: {body}"
     );
-    assert_eq!(body["error"]["data"]["code"], json!("PATH_NAMESPACE_UNKNOWN"));
+    assert_eq!(
+        body["error"]["data"]["code"],
+        json!("PATH_NAMESPACE_UNKNOWN")
+    );
     assert_eq!(body["error"]["data"]["input"], json!("client:ghost:/"));
     assert_eq!(
         body["error"]["data"]["available"],

@@ -75,10 +75,11 @@ pub fn topic_session_id(is_topic_message: bool, thread_id: Option<i32>) -> Optio
 }
 
 /// Canonical Telegram thread id of a forum group's built-in General topic.
-/// General messages carry NO explicit `message_thread_id` and are not flagged
-/// `is_topic_message`, which historically made them indistinguishable from
-/// DMs / non-forum groups (#1220).
-pub const GENERAL_TOPIC_ID: i32 = 1;
+///
+/// Re-exported from the ungated [`crate::channels::GENERAL_TOPIC_ID`] so the
+/// in-module call sites keep their existing path, and so nothing here can
+/// drift from the definition the ungated callers use.
+pub use crate::channels::GENERAL_TOPIC_ID;
 
 /// The `message_thread_id` to put on the wire for a session scoped to `topic`.
 ///
