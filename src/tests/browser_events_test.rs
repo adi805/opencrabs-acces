@@ -1,6 +1,7 @@
 //! #1189 — CDP event ring buffer: bounded retention, drain-once
 //! surfacing, event-to-summary mapping, and the `recent_events:` line
 //! format appended to browser tool results.
+#![cfg(feature = "browser")]
 
 use crate::brain::tools::browser::events::{EventLog, RING_CAPACITY, append_line, map_cdp_event};
 use chromiumoxide::cdp::CdpEvent;
