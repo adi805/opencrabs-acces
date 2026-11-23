@@ -72,7 +72,7 @@ async fn denied_scope_writes_nothing() {
         .expect("mint");
     let (token, _) = state
         .pairing
-        .verify_code(&code, "read only")
+        .verify_code(&code, "read only", "c")
         .expect("verify");
 
     let app = build_router(state.clone(), &[]);
@@ -111,7 +111,7 @@ async fn a_token_with_the_scope_clears_the_gate() {
         .pairing
         .mint_code(&[crate::remote::scopes::SCOPE_SESSION_SEND.to_string()])
         .expect("mint");
-    let (token, _) = state.pairing.verify_code(&code, "sender").expect("verify");
+    let (token, _) = state.pairing.verify_code(&code, "sender", "c").expect("verify");
 
     let app = build_router(state.clone(), &[]);
     let resp = app

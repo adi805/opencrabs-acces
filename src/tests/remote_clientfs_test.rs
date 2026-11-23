@@ -84,7 +84,7 @@ fn attach_device(
         .expect("mint code");
     let (_token, session) = state
         .pairing
-        .verify_code(&code, "test phone")
+        .verify_code(&code, "test phone", "c")
         .expect("verify code");
     let device = session.id.clone();
     let sub = relay.registry.subscribe(session_id, device_key(&device));
@@ -330,7 +330,7 @@ async fn an_unpaired_device_is_a_namespace_error() {
         .expect("mint code");
     let (_token, session) = state
         .pairing
-        .verify_code(&code, "known phone")
+        .verify_code(&code, "known phone", "c")
         .expect("verify code");
 
     let body = call(&state, "fs/list", json!({ "path": "client:ghost:/" })).await;

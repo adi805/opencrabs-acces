@@ -26,7 +26,7 @@ fn pairing_issues_scoped_token() {
     let scopes = vec![SCOPE_READ.to_string(), SCOPE_SEND.to_string()];
     let code = store.mint_code(&scopes).expect("mint");
 
-    let (token, session) = store.verify_code(&code, "phone").expect("verify");
+    let (token, session) = store.verify_code(&code, "phone", "c").expect("verify");
     assert!(token.starts_with(crate::remote::pairing::TOKEN_PREFIX));
     assert_eq!(
         session.scopes, scopes,
@@ -44,10 +44,10 @@ fn pairing_issues_scoped_token() {
 fn a_code_is_single_use() {
     let store = store();
     let code = store.mint_code(&[SCOPE_READ.to_string()]).expect("mint");
-    assert!(store.verify_code(&code, "phone").is_ok());
+    assert!(store.verify_code(&code, "phone", "c").is_ok());
     assert!(
         matches!(
-            store.verify_code(&code, "laptop"),
+            store.verify_code(&code, "laptop", "c"),
             Err(VerifyError::NoMatch)
         ),
         "a consumed code cannot be replayed"
@@ -72,7 +72,7 @@ fn expired_code_rejected() {
     std::fs::write(store.path(), rewritten).expect("store rewritten");
 
     assert!(
-        matches!(store.verify_code(&code, "phone"), Err(VerifyError::NoMatch)),
+        matches!(store.verify_code(&code, "phone", "c"), Err(VerifyError::NoMatch)),
         "an expired code is indistinguishable from an unknown one"
     );
     assert!(
@@ -86,7 +86,7 @@ fn revoked_token_rejected() {
     let store = store();
     let scopes = vec![SCOPE_READ.to_string(), SCOPE_SESSION_SEND.to_string()];
     let code = store.mint_code(&scopes).expect("mint");
-    let (token, session) = store.verify_code(&code, "lost phone").expect("verify");
+    let (token, session) = store.verify_code(&code, "lost phone", "c").expect("verify");
     assert!(store.verify_token(&token).is_some());
 
     let revoked = store.revoke(&session.id).expect("revoke");
@@ -109,7 +109,7 @@ fn revoked_token_rejected() {
 fn revoking_by_label_works_too() {
     let store = store();
     let code = store.mint_code(&[SCOPE_READ.to_string()]).expect("mint");
-    let (token, _) = store.verify_code(&code, "tablet").expect("verify");
+    let (token, _) = store.verify_code(&code, "tablet", "c").expect("verify");
     assert_eq!(store.revoke("tablet").expect("revoke by label"), 1);
     assert!(store.verify_token(&token).is_none());
 }
