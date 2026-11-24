@@ -10,8 +10,8 @@ body:
         the same defect. A closed hit means reference it, not re-file it.
 
         ```bash
-        gh search issues --repo opencrabs/opencrabs "<terms>" --state all
-        gh search prs --repo opencrabs/opencrabs "<terms>" --state all
+        gh search issues --repo adi805/opencrabs-acces "<terms>" --state all
+        gh search prs --repo adi805/opencrabs-acces "<terms>" --state all
         ```
 
         One issue, one defect. Do not bundle several unrelated bugs into one report.
