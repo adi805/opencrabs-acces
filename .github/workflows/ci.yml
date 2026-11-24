@@ -1317,10 +1317,19 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
+      # No `save-if` restriction: coverage runs only on workflow_dispatch, and a
+      # dispatch fired from a branch carries that branch's ref, so a
+      # `refs/heads/main`-only guard is never true there and the cache is never
+      # written. The repository holds no coverage cache at all, which is that
+      # guard working exactly as written: every dispatch compiled all 660 crates
+      # cold, and CI run 45133414001 was SIGTERM'd by runner preemption 32
+      # minutes in, mid-compile, never reaching the tests. Saving in the run's
+      # own scope lets a retry of the same branch -- what auto-rerun-preempted
+      # does after a preemption -- restore warm artifacts. Same trap the
+      # windows-build cache step documents.
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Refuse to administer the host's rustup
         # dtolnay/rust-toolchain manages rustup on whatever machine it runs
