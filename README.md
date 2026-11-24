@@ -367,7 +367,7 @@ This override works for **every provider** — OpenAI-compatible (custom, xiaomi
 > - **Cost** is the lesser one, and it's softened by caching: OpenCrabs uses prompt caching across every caching-capable provider (currently averaging ~87% efficiency), and a long context is mostly an unchanged prefix served from cache — so a bigger window costs far less than the raw token count suggests.
 > - **Context loss** is the one to watch: most models degrade as the window fills — they lose track of the middle and recall less reliably. Only the latest SOTA models hold large context robustly: closed (Opus 4.7 / 4.8, Fable 5, GPT-5.5, Gemini 3.1, …) or open (Qwen 3.7, Kimi K2.7, MiMo V2.5, GLM 5.2, DeepSeek V4, and the newer releases that keep coming from these and other labs). So raise `context_window` mainly on those frontier models; on anything older or smaller, staying near 200k keeps answers sharper.
 >
-> **Local models want less:** 128k is a good sweet spot — go **lower** if your machine is tight on resources or you start noticing hallucinations/fabrications, and **higher** only if you have more than 32GB of RAM and have tested your model at a larger window. Not sure what fits your setup? Reach out to Adolfo for suggestions/support, or open a [GitHub discussion](https://github.com/opencrabs/opencrabs/discussions).
+> **Local models want less:** 128k is a good sweet spot — go **lower** if your machine is tight on resources or you start noticing hallucinations/fabrications, and **higher** only if you have more than 32GB of RAM and have tested your model at a larger window. Not sure what fits your setup? Open an [issue](https://github.com/adi805/opencrabs-acces/issues) with your hardware specs and the model you are testing.
 >
 > **Leave auto-compaction on** — it's been battle-tested over months and needs no babysitting. Only run a *manual* compaction (the `/compact` command) if you have a specific, strong reason to summarize early; otherwise let it manage itself.
 
@@ -6053,7 +6053,7 @@ Cloud API issues, billing questions, and account problems should be directed to 
 
 ## 🔐 Reporting a vulnerability
 
-Security issues go through [GitHub's private vulnerability reporting](https://github.com/opencrabs/opencrabs/security/advisories/new), not a public issue. See [SECURITY.md](SECURITY.md) for what is in scope, what to include, and which dependency advisories are already known and tracked.
+Security issues go through [GitHub's private vulnerability reporting](https://github.com/adi805/opencrabs-acces/security/advisories/new), not a public issue. See [SECURITY.md](SECURITY.md) for what is in scope, what to include, and which dependency advisories are already known and tracked.
 
 ---
 
@@ -6128,9 +6128,8 @@ Full ledger: [SPONSORS.md](SPONSORS.md)
 
 ## 📞 Support
 
-- **Issues:** [GitHub Issues](https://github.com/opencrabs/opencrabs/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/opencrabs/opencrabs/discussions)
-- **Docs:** [Documentation](https://github.com/opencrabs/opencrabs/tree/main/src/docs)
+- **Issues:** [GitHub Issues](https://github.com/adi805/opencrabs-acces/issues)
+- **Docs:** [Documentation](https://github.com/adi805/opencrabs-acces/tree/main/src/docs)
 
 ---
 

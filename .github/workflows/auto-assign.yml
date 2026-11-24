@@ -13,15 +13,11 @@ jobs:
       - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
-            // Issues opened by the maintainer are assigned back to the
-            // maintainer; every other issue goes to the default owner.
-            const author = context.payload.issue.user.login;
-            const assignees = author === 'leshchenko1979'
-              ? ['leshchenko1979']
-              : ['adolfousier'];
+            // Fork-local: upstream points at @adolfousier, this repo is owned
+            // by @adi805 and upstream's default assignee has no access here.
             await github.rest.issues.addAssignees({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              assignees
+              assignees: ['adi805']
             });
