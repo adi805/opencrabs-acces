@@ -1,0 +1,179 @@
+name: android-gui
+
+# OpenCrabs Android GUI (egui/eframe cdylib + GameActivity + Gradle shell).
+# Everything lives under android/, which is its own standalone Cargo
+# workspace (different lockfile from the main binary) on purpose.
+
+on:
+  push:
+    branches: [android]
+    paths:
+      - "android/**"
+      - ".github/workflows/android-gui.yml"
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    name: APK arm64 (GameActivity + Gradle)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android SDK bits
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+
+      - name: Build .so (aarch64)
+        run: |
+          cargo ndk -t arm64-v8a -o app/src/main/jniLibs build --lib
+          ls -la app/src/main/jniLibs/arm64-v8a/
+          file app/src/main/jniLibs/arm64-v8a/*.so
+
+      - name: Gradle assembleDebug
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Upload APK artifact (before gates, so failures keep the APK)
+        uses: actions/upload-artifact@v4
+        with:
+          name: oc-gui-debug-apk-arm64
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: "Gate: zipalign + apksigner + ELF"
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          BT=$ANDROID_HOME/build-tools/36.0.0
+          ls -la "$APK"
+          echo "== zipalign verify (16KB pages, -P capital) =="
+          "$BT/zipalign" -c -P 16 "$APK" && echo "ZIPALIGN-16K-OK"
+          echo "== apksigner verify =="
+          "$BT/apksigner" verify --print-certs "$APK" && echo "APKSIGNER-OK"
+          echo "== ELF arch + 16KB LOAD alignment =="
+          unzip -o "$APK" 'lib/*' -d /tmp/apk-check >/dev/null
+          file /tmp/apk-check/lib/arm64-v8a/*.so | grep -q 'aarch64' || { echo 'wrong ELF arch'; exit 1; }
+          readelf -lW /tmp/apk-check/lib/arm64-v8a/*.so | grep -q '0x4000' || { echo 'ELF LOAD alignment must be 0x4000 (16KB page)'; exit 1; }
+          echo "ELF-GATE-OK"
+
+      - name: "Gate: aapt2 badging"
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          BT=$ANDROID_HOME/build-tools/36.0.0
+          "$BT/aapt2" dump badging "$APK" | tee /tmp/badging.txt
+          grep -q "package: name='io.opencrabs.mobile.gui'" /tmp/badging.txt
+          grep -q "minSdkVersion:'26'" /tmp/badging.txt
+          grep -q "native-code: 'arm64-v8a'" /tmp/badging.txt
+
+  emulator-selftest:
+    name: Emulator self-test (keyboard + typed text)
+    runs-on: ubuntu-latest
+    needs: build-apk
+    steps:
+      - uses: actions/checkout@v4
+
+      # A real IME for the self-test: adb's `input text` injects raw KeyEvents,
+      # which AGDK routes to onKeyDownNative/onKeyUpNative and NEVER into the
+      # text state, so it cannot exercise the IME bridge. ADBKeyboard
+      # (senzhk/ADBKeyBoard, MIT) commits text through InputConnection.commitText
+      # -- exactly the path a phone keyboard takes. Pinned + hash-checked.
+      - name: Fetch ADBKeyboard (pinned)
+        run: |
+          curl -sfL --retry 4 --retry-delay 4 -o android/ci/ADBKeyboard.apk \
+            "https://github.com/senzhk/ADBKeyBoard/releases/download/v2.5-dev/keyboardservice-debug.apk"
+          echo '41a8a0996d7397a2390d1ca16a75cb66c4a7bdaa89cf4e63600a4d3fb346fbbb  android/ci/ADBKeyboard.apk' | sha256sum -c -
+          ls -la android/ci/ADBKeyboard.apk
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android SDK bits
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+
+      # Run 45508916590 lesson: the emulator logged
+      #   ERROR | x86_64 emulation currently requires hardware acceleration!
+      #   CPU acceleration status: This user doesn't have permissions to use KVM
+      #   The KVM line in /etc/group is: [kvm:x:991:]
+      # /dev/kvm EXISTS on the ubuntu runner, but the group has no members, so
+      # user `runner` cannot open the node (mode 660 root:kvm). The emulator
+      # then exits instantly and adb never sees emulator-5554.
+      # Earlier "no KVM" verdicts were wrong: the TCG fallback came from the
+      # ANDROID_I_WANT_MY_TCG env we had forced ourselves.
+      - name: Enable KVM access (runner not in kvm group)
+        run: |
+          set -euxo pipefail
+          ls -la /dev/kvm
+          sudo groupadd -r kvm 2>/dev/null || true
+          sudo gpasswd -a "$(id -un)" kvm 2>/dev/null || true
+          sudo chmod 666 /dev/kvm
+          ls -la /dev/kvm
+          grep -cE 'vmx|svm' /proc/cpuinfo
+
+      - name: Build .so (x86_64, for emulator)
+        working-directory: android
+        run: |
+          cargo ndk -t x86_64 -o app/src/main/jniLibs build --lib
+          file app/src/main/jniLibs/x86_64/*.so
+
+      - name: Gradle assembleDebug (x86_64 APK)
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Boot emulator (api-34 x86_64, KVM)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          emulator-boot-timeout: 1200
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          disable-spellchecker: true
+          # NOTE: this action executes its `script:` input line by line as
+          # separate `sh -c` processes (lib/script-parser.js +
+          # lib/main.js:212-215), so any multi-line logic dies here. All the
+          # real logic lives in android/ci/selftest.sh; keep this to ONE line.
+          script: APK="$GITHUB_WORKSPACE/android/app/build/outputs/apk/debug/app-debug.apk" ADBKEYBOARD_APK="$GITHUB_WORKSPACE/android/ci/ADBKeyboard.apk" bash android/ci/selftest.sh
+          disable-linux-hw-accel: false
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-screens
+          path: |
+            android/pass.png
+            android/keyboard-shown.png
+            android/fail-*.png

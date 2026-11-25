@@ -1,0 +1,36 @@
+[package]
+name = "oc-gui"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+# cdylib is what GameActivity dlopen()s; the lib target keeps rust-analyzer sane.
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+# glow (OpenGL ES) rather than wgpu: the CI emulator renders with swiftshader,
+# which exposes GLES reliably and Vulkan only partially.
+eframe = { version = "0.36", default-features = false, features = [
+  "default_fonts",
+  "glow",
+  "android-game-activity",
+] }
+android_logger = "0.15"
+log = "0.4"
+# The android-game-activity feature is what switches android-activity from the
+# native_activity glue (text_input_state = NOP) to the GameActivity glue
+# (real GameTextInput bridge). Keep it on our own dependency too so feature
+# unification cannot silently drop it.
+winit = { version = "0.30", default-features = false, features = [
+  "android-game-activity",
+] }
+
+# Debug APK: strip symbols so the per-ABI .so stays well under the 50 MB
+# Telegram bot upload limit (unstripped debug cdylib is ~141 MB).
+[profile.dev]
+strip = "symbols"
+
+# Standalone workspace root: this crate is NOT a member of the main
+# opencrabs workspace (different lockfile, mobile-only deps).
+[workspace]

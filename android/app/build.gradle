@@ -1,0 +1,57 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'io.opencrabs.mobile.gui'
+    compileSdk = 36
+
+    defaultConfig {
+        applicationId = "io.opencrabs.mobile.gui"
+        minSdk = 26
+        targetSdk = 36
+        versionCode = 1
+        versionName = "0.1.0"
+    }
+
+    buildTypes {
+        debug {
+            // AGP creates and uses the default debug keystore; CI then verifies
+            // the signature with apksigner before anything is uploaded.
+            minifyEnabled = false
+        }
+        release {
+            minifyEnabled = false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    // GameActivity + GameTextInput in one artifact.
+    //
+    // VERSION IS NOT FREE: the C sources bundled in android-activity 0.6.0
+    // (game-activity-csrc) are AGDK 2.0.2 and register their JNI methods via
+    // RegisterNatives with these exact descriptors:
+    //   onTouchEventNative        (JLandroid/view/MotionEvent;)Z
+    //   setSoftKeyboardActive     (ZI)V
+    // AGDK >= 2.1 changed onTouchEventNative to the 17-arg
+    // (JLandroid/view/MotionEvent;IIIIIJJIIIIIIFF)Z and added
+    // onEditorActionNative / onSoftwareKeyboardVisibilityChangedNative.
+    // Mixing 4.x AAR with 0.6.0 C => RegisterNatives signature mismatch =>
+    // LOG_FATAL abort at library load (verified by javap -s on 2.0.2, 3.0.5,
+    // 4.4.2 vs the table in GameActivity.cpp).
+    implementation 'androidx.games:games-activity:2.0.2'
+}
