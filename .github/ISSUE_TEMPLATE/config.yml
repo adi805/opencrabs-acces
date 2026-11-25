@@ -6,11 +6,11 @@ blank_issues_enabled: false
 
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/opencrabs/opencrabs/security/advisories/new
+    url: https://github.com/adi805/opencrabs-acces/security/advisories/new
     about: Report a vulnerability privately. Never open a public issue for one. See SECURITY.md.
   - name: Setup and usage questions
     url: https://docs.opencrabs.com
     about: Installation, configuration, providers, channels, and the TUI are documented here first.
   - name: Dev factory, CI, and release tooling
-    url: https://github.com/leshchenko1979/opencrabs-dev-factory/issues
-    about: Tooling, CI, and release automation issues belong in the dev factory repo, not here.
+    url: https://github.com/adi805/opencrabs-acces/issues
+    about: Tooling, CI, and release automation issues are tracked here in the fork.

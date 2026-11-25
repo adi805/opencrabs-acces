@@ -99,8 +99,7 @@ Both halves of the shape are enforced in CI: `.github/workflows/title-lint.yml` 
 
 OpenCrabs is developed alongside a **dev factory** — the tooling, CI, and automation that build, test, and release the binary. Issues are split by what they describe:
 
-- **The binary** — runtime behaviour, channels, providers, TUI, memory, tools — belongs in this repository.
-- **The dev factory** — its tooling, CI, release automation, and process — belongs in [`leshchenko1979/opencrabs-dev-factory`](https://github.com/leshchenko1979/opencrabs-dev-factory).
+All issues are filed in this repository — both the binary (runtime behaviour, channels, providers, TUI, memory, tools) and the tooling, CI, and release automation around it. The fork owns its own CI and release automation (`fork-ops/`), so there is no separate dev-factory tracker.
 
 The historical issue portfolio lives at `leshchenko1979/opencrabs` and is read-only; new issues do not go there.
 
@@ -109,8 +108,8 @@ The historical issue portfolio lives at `leshchenko1979/opencrabs` and is read-o
 **Search before you file** — open *and* closed, issues *and* PRs:
 
 ```bash
-gh search issues --repo opencrabs/opencrabs "<terms>" --state all
-gh search prs --repo opencrabs/opencrabs "<terms>" --state all
+gh search issues --repo adi805/opencrabs-acces "<terms>" --state all
+gh search prs --repo adi805/opencrabs-acces "<terms>" --state all
 ```
 
 A closed hit that already fixed the same defect means *reference it*, not *re-file it*. A duplicate costs a review cycle and splits the record across two threads.
@@ -132,7 +131,7 @@ Add the area label on creation (`--label provider`) so triage can filter it. A s
 A code comment explains what the code does and why, in words. An issue number can be added to that explanation, but it cannot replace it: a reader should understand the code without opening the ticket.
 
 - A bare `#N` in source means an issue on `opencrabs/opencrabs`. Check that the issue exists there before you cite it.
-- Do not cite numbers from the historical fork tracker. If the history behind a comment matters, recreate that issue on `opencrabs/opencrabs` and cite the new number.
+- Do not cite numbers from the historical fork tracker. If the history behind a comment matters, recreate that issue in this repository and cite the new number.
 
 ```rust
 // Before: the number is the only explanation
