@@ -25,6 +25,13 @@ log = "0.4"
 winit = { version = "0.30", default-features = false, features = [
   "android-game-activity",
 ] }
+# MUST stay in [dependencies], NOT after [workspace]: a key placed after a table
+# header is silently ignored by cargo (that bug shipped 0.6.1 in run 45593951071).
+# 0.6.0 vendors AGDK whose RegisterNatives table matches the Java AAR we pin
+# (games-activity 2.0.2, onTouchEventNative 3-arg). 0.6.1 vendors a newer AGDK
+# with a 17-arg onTouchEventNative -> RegisterNatives fails -> SIGABRT at load.
+# Proof: android-activity-0.6.0/GameActivity.cpp:974 vs 0.6.1:1142.
+android-activity = "=0.6.0"
 
 # Debug APK: strip symbols so the per-ABI .so stays well under the 50 MB
 # Telegram bot upload limit (unstripped debug cdylib is ~141 MB).
@@ -34,9 +41,3 @@ strip = "symbols"
 # Standalone workspace root: this crate is NOT a member of the main
 # opencrabs workspace (different lockfile, mobile-only deps).
 [workspace]
-
-# Dependensinya kunci ke 0.6.0: versi lebih baru dari android-activity membawa salinan AGDK C yang baru,
-# dan signature RegisterNatives tidak cocok dengan AAR games-activity Java 2.0.2 yang di-pin
-# (alfabet: onTouchEventNative 3-arg vs 17-arg) -> SIGABRT fatal saat load di GameActivity.
-# Bukti run 45562437029: "Abort message: RegisterNatives failed ... com.google.androidgamesdk.GameActivity".
-android-activity = "=0.6.0"
