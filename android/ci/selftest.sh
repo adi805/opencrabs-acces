@@ -68,6 +68,11 @@ diag() {
   $ADB shell dumpsys window 2>&1 | grep -E 'mCurrentFocus|mFocusedApp|mImeWindowVis|InputMethod' | head -12 || true
   echo "--- app log (OcGui) ---"
   $ADB logcat -d -s OcGui 2>&1 | tail -60 || true
+  echo "--- rust stderr (RustStdoutStderr: panic/stdout dari lib) ---"
+  $ADB logcat -d -s RustStdoutStderr 2>&1 | tail -40 || true
+  # Keep the FULL logcat for artifact upload: the greps above are lossy and
+  # have already hidden the panic line once (run 45620652713).
+  $ADB logcat -d 2>&1 > "$ROOT/logcat-full.log" || true
   $ADB logcat -d -b crash 2>&1 > "$ROOT/crash-buffer.log" || true
   echo "--- logcat -b crash: abort message + top frames (HEAD, bukan tail) ---"
   grep -aE 'Abort message|Fatal signal|signal [0-9]|>>> |Build fingerprint|^Cause' "$ROOT/crash-buffer.log" 2>/dev/null | head -12 || true

@@ -47,6 +47,21 @@ fn android_main(app: AndroidApp) {
             .with_max_level(log::LevelFilter::Info)
             .with_tag("OcGui"),
     );
+    // Rust panics print to stderr, which android_logger does NOT route to
+    // logcat (tag RustStdoutStderr only carries stdout when the glue sets it
+    // up; in practice panics were invisible in every diagnostics dump).
+    // Route every panic into the OcGui tag so CI diagnostics catch it.
+    // Full backtrace requires the `backtrace` dep; file:line + message is
+    // enough to locate the crash site.
+    std::panic::set_hook(Box::new(|info| {
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let msg = info.to_string();
+        log::error!("PANIC at {} : {}", loc, msg);
+        eprintln!("PANIC at {} : {}", loc, msg);
+    }));
     log::info!("APP_START glue=game-activity");
 
     let options = eframe::NativeOptions {

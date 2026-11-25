@@ -168,13 +168,18 @@ jobs:
           script: APK="$GITHUB_WORKSPACE/android/app/build/outputs/apk/debug/app-debug.apk" ADBKEYBOARD_APK="$GITHUB_WORKSPACE/android/ci/ADBKeyboard.apk" bash android/ci/selftest.sh
           disable-linux-hw-accel: false
 
-      - name: Upload screenshots
+      - name: Upload screenshots + logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: emulator-screens
+          # selftest.sh writes to $GITHUB_WORKSPACE (repo root), NOT android/.
+          # Previous path list pointed at android/* so these artifacts
+          # silently never uploaded (verified: run 45620652713 artifacts =
+          # APK only).
           path: |
-            android/pass.png
-            android/keyboard-shown.png
-            android/fail-*.png
-            android/crash-buffer.log
+            pass.png
+            keyboard-shown.png
+            fail-*.png
+            crash-buffer.log
+            logcat-full.log
