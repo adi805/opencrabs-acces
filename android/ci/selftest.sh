@@ -68,6 +68,9 @@ diag() {
   $ADB shell dumpsys window 2>&1 | grep -E 'mCurrentFocus|mFocusedApp|mImeWindowVis|InputMethod' | head -12 || true
   echo "--- app log (OcGui) ---"
   $ADB logcat -d -s OcGui 2>&1 | tail -60 || true
+  $ADB logcat -d -b crash 2>&1 | tail -120 > "$ROOT/crash-buffer.log" || true
+  echo "--- logcat -b crash (tombstone/abort/panic) ---"
+  tail -80 "$ROOT/crash-buffer.log" 2>/dev/null || true
   echo "--- logcat: fatal / IME related ---"
   $ADB logcat -d 2>&1 | grep -iE 'FATAL|AndroidRuntime|AdbIME|adbkeyboard|game-activity|InputMethodService' | tail -40 || true
   echo "===== END DIAGNOSTICS ====="

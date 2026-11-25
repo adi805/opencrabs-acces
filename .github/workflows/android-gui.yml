@@ -177,3 +177,4 @@ jobs:
             android/pass.png
             android/keyboard-shown.png
             android/fail-*.png
+            android/crash-buffer.log
