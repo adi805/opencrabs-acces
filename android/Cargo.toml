@@ -34,3 +34,9 @@ strip = "symbols"
 # Standalone workspace root: this crate is NOT a member of the main
 # opencrabs workspace (different lockfile, mobile-only deps).
 [workspace]
+
+# Dependensinya kunci ke 0.6.0: versi lebih baru dari android-activity membawa salinan AGDK C yang baru,
+# dan signature RegisterNatives tidak cocok dengan AAR games-activity Java 2.0.2 yang di-pin
+# (alfabet: onTouchEventNative 3-arg vs 17-arg) -> SIGABRT fatal saat load di GameActivity.
+# Bukti run 45562437029: "Abort message: RegisterNatives failed ... com.google.androidgamesdk.GameActivity".
+android-activity = "=0.6.0"
