@@ -68,9 +68,12 @@ diag() {
   $ADB shell dumpsys window 2>&1 | grep -E 'mCurrentFocus|mFocusedApp|mImeWindowVis|InputMethod' | head -12 || true
   echo "--- app log (OcGui) ---"
   $ADB logcat -d -s OcGui 2>&1 | tail -60 || true
-  $ADB logcat -d -b crash 2>&1 | tail -120 > "$ROOT/crash-buffer.log" || true
-  echo "--- logcat -b crash (tombstone/abort/panic) ---"
-  tail -80 "$ROOT/crash-buffer.log" 2>/dev/null || true
+  $ADB logcat -d -b crash 2>&1 > "$ROOT/crash-buffer.log" || true
+  echo "--- logcat -b crash: abort message + top frames (HEAD, bukan tail) ---"
+  grep -aE 'Abort message|Fatal signal|signal [0-9]|>>> |Build fingerprint|^Cause' "$ROOT/crash-buffer.log" 2>/dev/null | head -12 || true
+  grep -aE '^\s+#([0-9]|[1-3][0-9]) pc' "$ROOT/crash-buffer.log" 2>/dev/null | head -32 || true
+  echo "--- logcat: exception class names + JNI/register errors ---"
+  $ADB logcat -d 2>&1 | grep -iE 'UnsatisfiedLink|NoSuchMethod|ClassNotFound|NoClassDef|RegisterNatives|JNI DETECTED|liboc_gui|gamesdk|GameActivity' | head -30 || true
   echo "--- logcat: fatal / IME related ---"
   $ADB logcat -d 2>&1 | grep -iE 'FATAL|AndroidRuntime|AdbIME|adbkeyboard|game-activity|InputMethodService' | tail -40 || true
   echo "===== END DIAGNOSTICS ====="
