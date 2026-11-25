@@ -73,7 +73,10 @@ diag() {
   grep -aE 'Abort message|Fatal signal|signal [0-9]|>>> |Build fingerprint|^Cause' "$ROOT/crash-buffer.log" 2>/dev/null | head -12 || true
   grep -aE '^\s+#([0-9]|[1-3][0-9]) pc' "$ROOT/crash-buffer.log" 2>/dev/null | head -32 || true
   echo "--- logcat: exception class names + JNI/register errors ---"
-  $ADB logcat -d 2>&1 | grep -iE 'UnsatisfiedLink|NoSuchMethod|ClassNotFound|NoClassDef|RegisterNatives|JNI DETECTED|liboc_gui|gamesdk|GameActivity' | head -30 || true
+  $ADB logcat -d 2>&1 | grep -aE 'FATAL EXCEPTION|E AndroidRuntime|UnsatisfiedLink|NoSuchMethod|ClassNotFound|NoClassDef|RegisterNatives|JNI DETECTED|liboc_gui|gamesdk|GameActivity|Exception' | head -30 || true
+  echo "--- installed native libs (apk -> device) ---"
+  $ADB shell dumpsys package io.opencrabs.mobile.gui 2>&1 | grep -aE 'nativeLibraryDir|primaryCpuAbi|secondaryCpuAbi|versionName' | head -6 || true
+  $ADB shell ls -la /data/app/*/io.opencrabs.mobile.gui*/lib/x86_64/ 2>&1 | head -8 || true
   echo "--- logcat: fatal / IME related ---"
   $ADB logcat -d 2>&1 | grep -iE 'FATAL|AndroidRuntime|AdbIME|adbkeyboard|game-activity|InputMethodService' | tail -40 || true
   echo "===== END DIAGNOSTICS ====="
@@ -89,6 +92,7 @@ fail() {
 say "cwd: $(pwd)"
 say "APK: $APK"
 [ -f "$APK" ] || fail "APK not found: $APK"
+say "APK native libs:"; unzip -l "$APK" 2>/dev/null | grep -aE 'lib/.*\.so' | head -10 || true
 [ -f "$ADBKEYBOARD_APK" ] || fail "ADBKeyboard APK not found: $ADBKEYBOARD_APK"
 
 $ADB wait-for-device || fail "adb: no device"
