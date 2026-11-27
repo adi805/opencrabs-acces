@@ -277,14 +277,62 @@ log "every bad job was infrastructure (preempted=$preempted capacity=$infra rela
 # cancels it. Same rule the per-job `superseded` veto applies, one level up.
 # Scoped to this run's own workflow so the repair workflow's own run, which is
 # always created later, can never count as "newer".
-if [ -n "$workflow_id" ] && [ "$head_branch" != "unknown" ]; then
-    newest_run=$(gh api \
-        "repos/$REPO/actions/workflows/$workflow_id/runs?branch=$(printf '%s' "$head_branch" | jq -sRr @uri)&per_page=1" \
-        2>/dev/null | jq -r '.workflow_runs[0].id // empty') || true
-    if [ -n "$newest_run" ] && [ "$newest_run" != "$RUN_ID" ]; then
-        log "SKIP: run $newest_run is newer on '$head_branch'; that run is the truth and a rerun here could cancel it"
-        exit 0
-    fi
+#
+# The comparison is by CI ref, never by branch name alone. github.ref is
+# refs/heads/<branch> for a push and refs/pull/<n>/merge for a pull_request, so
+# a fork PR whose branch happens to be called `main` is a different concurrency
+# group running different code: it can neither be the newer truth nor be
+# cancelled by this rerun. The runs list carries head_branch and pull_requests
+# but not ref, so the ref is rebuilt from those two: a run with a PR number is
+# `pr:<n>`, everything else is `branch:<head_branch>`. Only a run from this
+# repository with the same key can be newer than this one.
+#
+# A lookup that fails or yields nothing usable is not evidence that no newer
+# run exists, and rerunning on unreadable evidence is exactly how an older run
+# restarts over a newer one. So every unverified path below vetoes, like every
+# other unreadable-evidence path in this script.
+if [ -z "$workflow_id" ] || [ "$head_branch" = "unknown" ]; then
+    log "STOP: cannot identify the workflow/ref of run $RUN_ID; not rerunning without a newer-run check"
+    exit 0
+fi
+
+run_ref_key=$(printf '%s' "$run_json" | jq -r '
+    if ((.pull_requests // []) | length) > 0
+    then "pr:\(.pull_requests[0].number)"
+    else "branch:\(.head_branch // "unknown")"
+    end')
+
+runs_err=$(mktemp)
+if ! runs_json=$(gh api \
+    "repos/$REPO/actions/workflows/$workflow_id/runs?branch=$(printf '%s' "$head_branch" | jq -sRr @uri)&per_page=50" \
+    2>"$runs_err"); then
+    log "STOP: cannot list runs for '$head_branch' to look for a newer one: $(head -n 1 "$runs_err")"
+    rm -f "$runs_err"
+    exit 0
+fi
+rm -f "$runs_err"
+
+newest_run=$(printf '%s' "$runs_json" | jq -r --arg repo "$REPO" --arg key "$run_ref_key" '
+    [ .workflow_runs[]
+      | select((.head_repository.full_name // "") == $repo)
+      | select(
+          (if ((.pull_requests // []) | length) > 0
+           then "pr:\(.pull_requests[0].number)"
+           else "branch:\(.head_branch // "unknown")"
+           end) == $key)
+    ] | .[0].id // empty' 2>/dev/null)
+jq_status=$?
+if [ "$jq_status" -ne 0 ]; then
+    log "STOP: cannot parse the run list for '$head_branch'; not rerunning unverified"
+    exit 0
+fi
+if [ -z "$newest_run" ]; then
+    log "STOP: no run of $run_ref_key in $REPO within the newest 50; cannot prove this one is current"
+    exit 0
+fi
+if [ "$newest_run" != "$RUN_ID" ]; then
+    log "SKIP: run $newest_run is newer on '$head_branch' for $run_ref_key; that run is the truth and a rerun here could cancel it"
+    exit 0
 fi
 
 if [ "$DRY_RUN" = "1" ]; then
