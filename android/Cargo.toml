@@ -33,6 +33,12 @@ winit = { version = "0.30", default-features = false, features = [
 # Proof: android-activity-0.6.0/GameActivity.cpp:974 vs 0.6.1:1142.
 android-activity = "=0.6.0"
 
+# Vendored android-activity 0.6.0 with a null-guard fix in the GameTextInput
+# callback (upstream 0.6.0 AND 0.6.1 both panic on the initial empty state:
+# slice::from_raw_parts(null, 0)). See vendor/android-activity/README-OC.md.
+[patch.crates-io]
+android-activity = { path = "vendor/android-activity" }
+
 # Debug APK: strip symbols so the per-ABI .so stays well under the 50 MB
 # Telegram bot upload limit (unstripped debug cdylib is ~141 MB).
 [profile.dev]
