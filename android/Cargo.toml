@@ -31,12 +31,16 @@ winit = { version = "0.30", default-features = false, features = [
   "x11",
   "wayland",
 ] }
-# MUST stay in [dependencies], NOT after [workspace]: a key placed after a table
-# header is silently ignored by cargo (that bug shipped 0.6.1 in run 45593951071).
-# 0.6.0 vendors AGDK whose RegisterNatives table matches the Java AAR we pin
-# (games-activity 2.0.2, onTouchEventNative 3-arg). 0.6.1 vendors a newer AGDK
-# with a 17-arg onTouchEventNative -> RegisterNatives fails -> SIGABRT at load.
-# Proof: android-activity-0.6.0/GameActivity.cpp:974 vs 0.6.1:1142.
+# android-activity WAJIB target-specific: crate ini menarik ndk-sys yang
+# menolak compile di host (ndk-sys/src/lib.rs:22 "only supports compiling for
+# Android"), jadi host cargo check gagal kalau dia global.
+# Pin =0.6.0 harus tetap di dalam blok dependencies (key setelah header tabel
+# diabaikan cargo -- bug itu yang bikin 0.6.1 kepakai di run 45593951071).
+# 0.6.0 vendors AGDK yang tabel RegisterNatives-nya cocok dengan AAR Java yang
+# kita pin (games-activity 2.0.2, onTouchEventNative 3-arg). 0.6.1 bawa AGDK
+# lebih baru dengan onTouchEventNative 17-arg -> RegisterNatives gagal ->
+# SIGABRT saat load. Bukti: 0.6.0/GameActivity.cpp:974 vs 0.6.1:1142.
+[target.'cfg(target_os = "android")'.dependencies]
 android-activity = "=0.6.0"
 
 # Vendored android-activity 0.6.0 with a null-guard fix in the GameTextInput
