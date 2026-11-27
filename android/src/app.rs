@@ -100,7 +100,7 @@ impl ChatApp {
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
-        egui::TopBottomPanel::top("oc_topbar")
+        egui::Panel::top("oc_topbar")
             .frame(egui::Frame::default().inner_margin(egui::Margin::symmetric(12, 8)))
             .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -122,8 +122,8 @@ impl ChatApp {
         if !self.drawer_open {
             return;
         }
-        egui::SidePanel::left("oc_sessions")
-            .exact_width(210.0)
+        egui::Panel::left("oc_sessions")
+            .exact_size(210.0)
             .frame(egui::Frame::default().inner_margin(egui::Margin::symmetric(10, 10)))
             .show_inside(ui, |ui| {
                 ui.label(egui::RichText::new("SESI").strong());
@@ -197,7 +197,7 @@ impl ChatApp {
     }
 
     fn composer_bar(&mut self, ui: &mut egui::Ui, now: f64) {
-        egui::TopBottomPanel::bottom("oc_composer")
+        egui::Panel::bottom("oc_composer")
             .frame(egui::Frame::default().inner_margin(egui::Margin::symmetric(10, 8)))
             .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -266,7 +266,7 @@ impl ChatApp {
 
         if self.frame == 1 {
             let ppp = ui.ctx().pixels_per_point();
-            let rect = ui.input(|i| i.screen_rect);
+            let rect = ui.ctx().content_rect();
             log::info!(
                 "UI_READY sessions={} active={} screen={}x{} ppp={}",
                 self.sessions.len(),
@@ -276,6 +276,13 @@ impl ChatApp {
                 ppp
             );
         }
+    }
+}
+
+impl eframe::App for ChatApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Inherent method, bukan rekursi ke trait.
+        ChatApp::ui(self, ui);
     }
 }
 
