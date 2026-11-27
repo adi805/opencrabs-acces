@@ -162,6 +162,9 @@ jobs:
           api-level: 34
           arch: x86_64
           target: google_apis
+          # AVD default tanpa profile = 320x640 ppp=1 (kekecilan, composer mepet
+          # batas layar). Pakai profil HP nyata biar layout diuji di ukuran asli.
+          profile: Nexus 6
           emulator-boot-timeout: 1200
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           disable-animations: true

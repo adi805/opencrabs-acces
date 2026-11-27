@@ -85,10 +85,24 @@ impl ChatApp {
         // IME state dibaca tiap frame selama composer hidup.
         self.ime.sync(&mut self.composer);
 
+        // Urutan panel WAJIB: top/bottom/side dulu, CentralPanel PALING AKHIR.
+        // CentralPanel mengambil seluruh rect yang tersisa; kalau dia dipanggil
+        // sebelum Panel::bottom, composer ditaruh DI LUAR layar (bukti run
+        // 46017121968: COMPOSER pxcy=703 padahal screen=320x640), tap selftest
+        // mendarat di kosong, keyboard nggak pernah muncul.
+        if self.frame == 1 {
+            let r = ui.ctx().content_rect();
+            log::info!(
+                "SCREEN {}x{} ppp={}",
+                r.width(),
+                r.height(),
+                ui.ctx().pixels_per_point()
+            );
+        }
         self.top_bar(ui);
+        self.composer_bar(ui, now);
         self.drawer(ui);
         self.transcript(ui);
-        self.composer_bar(ui, now);
 
         if let Some(tokens) = self.agent.tick(&mut self.sessions, self.active, now) {
             log::info!("MOCK_STREAM_DONE tokens={}", tokens);
