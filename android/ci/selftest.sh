@@ -1,40 +1,33 @@
 #!/usr/bin/env bash
-# Emulator self-test for the OpenCrabs Android GUI spike.
+# Emulator self-test untuk OpenCrabs Android GUI (scaffold UI asli, bukan
+# TextEdit demo lagi).
 #
-# WHAT THIS PROVES
-#   The AGDK GameActivity IME bridge delivers committed text into the egui
-#   TextEdit, end to end, on a booted Android emulator:
-#     IME (ADBKeyboard) commitText -> InputConnection.stateUpdated()
-#       -> listener.stateChanged() [GameActivity]
-#       -> onTextInputEventNative (GameActivity.cpp:979)
-#       -> GameTextInput_processEvent -> GameActivity_getTextInputState
-#       -> AndroidApp::text_input_state() [android-activity 0.6 game_activity]
-#       -> Spike adopts it -> egui shows "typed: 7 'halo123'".
-#   The app ONLY ever reads text_input_state(), so "TYPED chars>0" in the
-#   OcGui log can only have come through that bridge. Nothing else in the
-#   app writes the buffer except the Clear button (which we never touch).
+# ALUR YANG DIBUKTIKAN
+#   1. App hidup: UI_READY ke-log dari ChatApp.
+#   2. Tap composer (koordinat dari log COMPOSER, bukan tebakan) -> IME
+#      window muncul.
+#   3. Teks "rekap penjualan" masuk lewat jalur IME asli
+#      (ADBKeyboard commitText -> GameTextInput -> text_input_state ->
+#      IME_ADOPT -> COMPOSER_TEXT). App cuma pernah baca
+#      text_input_state(), jadi COMPOSER_TEXT hanya bisa datang dari bridge.
+#   4. Tap tombol Kirim (koordinat log SEND) -> SENT_TO_AGENT ->
+#      MOCK_STREAM_START -> MOCK_STREAM_DONE tokens>0: transcript streaming
+#      dari state, bukan teks optimistis.
 #
-# WHAT THIS DOES NOT PROVE
-#   Hardware-keyboard input, device-specific IMEs (Gboard autocorrect,
-#   voice input), or anything beyond this TextEdit.
+# TIDAK DIBUKTIKAN DI SINI
+#   Gboard/autokorekt, hardware keyboard, koneksi core opencrabs (task 3).
 #
-# WHY A SEPARATE FILE
-#   reactivecircus/android-emulator-runner@v2 splits its `script:` input into
-#   single lines and executes each one as its own `sh -c`
-#   (lib/script-parser.js + lib/main.js:212-215, verified from source).
-#   Shell variables do not survive across lines and multi-line
-#   `until ... do ... done` blocks get shredded. The workflow passes exactly
-#   one line: `bash ci/selftest.sh`.
+# KENAPA FILE TERPISAH
+#   reactivecircus/android-emulator-runner@v2 memecah `script:` per baris jadi
+#   `sh -c` terpisah (lib/script-parser.js + lib/main.js:212-215): variabel
+#   shell mati antar baris dan blok multi-baris terhambat. Workflow memanggil
+#   persis satu baris: `bash ci/selftest.sh`.
 #
-# WHY AN EXTRA IME
-#   `adb shell input text` injects raw KeyEvents. AGDK routes those to
-#   onKeyDownNative/onKeyUpNative (GameActivity.cpp:975-977) which feed the
-#   native key callback and never touch the text state, so they cannot
-#   exercise the IME bridge. ADBKeyboard (senzhk/ADBKeyBoard, MIT) is a real
-#   InputMethodService: its receiver commits text through
-#   InputConnection.commitText(), which is exactly the path a phone keyboard
-#   takes. It is downloaded into ci/ by the workflow, which verifies the
-#   pinned sha256 BEFORE this script runs.
+# KENAPA ADBKEYBOARD
+#   `adb shell input text` injek raw KeyEvent yang AGDK rutekan ke
+#   onKeyDownNative dan tidak pernah menyentuh text state. ADBKeyboard
+#   (senzhk/ADBKeyBoard, MIT) adalah InputMethodService sungguhan yang commit
+#   lewat InputConnection.commitText(): jalur yang sama dengan keyboard HP.
 
 set -u
 set -o pipefail
@@ -46,11 +39,11 @@ ADBKEYBOARD_APK="${ADBKEYBOARD_APK:-$ROOT/ci/ADBKeyboard.apk}"
 PKG="io.opencrabs.mobile.gui"
 ACTIVITY="$PKG/.MainActivity"
 IME_ID="com.android.adbkeyboard/.AdbIME"
-TEXT_TO_TYPE="halo123"
+TEXT_TO_TYPE="rekap penjualan"
 
 say() { echo "[selftest] $*"; }
 
-shot() { # $1 = output filename
+shot() {
   local name="$1"
   $ADB shell screencap -p "/sdcard/$name" >/dev/null 2>&1 || return 0
   $ADB pull "/sdcard/$name" "$ROOT/$name" >/dev/null 2>&1 || true
@@ -63,27 +56,20 @@ diag() {
   echo "--- wm size / density ---"; $ADB shell wm size 2>&1; $ADB shell wm density 2>&1
   echo "--- ime list -s ---"; $ADB shell ime list -s 2>&1 || true
   echo "--- dumpsys input_method (key fields) ---"
-  $ADB shell dumpsys input_method 2>&1 | grep -E 'mCurMethodId|mCurShown|mShowRequested|mInputShown|mInputViewShown|mServedView|mCurFocusedWindow|mHaveConnection' || true
-  echo "--- dumpsys window (focus + ime window) ---"
-  $ADB shell dumpsys window 2>&1 | grep -E 'mCurrentFocus|mFocusedApp|mImeWindowVis|InputMethod' | head -12 || true
+  $ADB shell dumpsys input_method 2>&1 | grep -E 'mCurMethodId|mInputShown|mInputViewShown|mCurFocusedWindow' || true
   echo "--- app log (OcGui) ---"
-  $ADB logcat -d -s OcGui 2>&1 | tail -60 || true
-  echo "--- rust stderr (RustStdoutStderr: panic/stdout dari lib) ---"
+  $ADB logcat -d -s OcGui 2>&1 | tail -80 || true
+  echo "--- rust stderr (RustStdoutStderr) ---"
   $ADB logcat -d -s RustStdoutStderr 2>&1 | tail -40 || true
-  # Keep the FULL logcat for artifact upload: the greps above are lossy and
-  # have already hidden the panic line once (run 45620652713).
   $ADB logcat -d 2>&1 > "$ROOT/logcat-full.log" || true
   $ADB logcat -d -b crash 2>&1 > "$ROOT/crash-buffer.log" || true
-  echo "--- logcat -b crash: abort message + top frames (HEAD, bukan tail) ---"
-  grep -aE 'Abort message|Fatal signal|signal [0-9]|>>> |Build fingerprint|^Cause' "$ROOT/crash-buffer.log" 2>/dev/null | head -12 || true
+  echo "--- logcat -b crash: abort message + top frames (HEAD) ---"
+  grep -aE 'Abort message|Fatal signal|signal [0-9]|>>> |^Cause' "$ROOT/crash-buffer.log" 2>/dev/null | head -12 || true
   grep -aE '^\s+#([0-9]|[1-3][0-9]) pc' "$ROOT/crash-buffer.log" 2>/dev/null | head -32 || true
-  echo "--- logcat: exception class names + JNI/register errors ---"
-  $ADB logcat -d 2>&1 | grep -aE 'FATAL EXCEPTION|E AndroidRuntime|UnsatisfiedLink|NoSuchMethod|ClassNotFound|NoClassDef|RegisterNatives|JNI DETECTED|liboc_gui|gamesdk|GameActivity|Exception' | head -30 || true
-  echo "--- installed native libs (apk -> device) ---"
-  $ADB shell dumpsys package io.opencrabs.mobile.gui 2>&1 | grep -aE 'nativeLibraryDir|primaryCpuAbi|secondaryCpuAbi|versionName' | head -6 || true
-  $ADB shell ls -la /data/app/*/io.opencrabs.mobile.gui*/lib/x86_64/ 2>&1 | head -8 || true
-  echo "--- logcat: fatal / IME related ---"
-  $ADB logcat -d 2>&1 | grep -iE 'FATAL|AndroidRuntime|AdbIME|adbkeyboard|game-activity|InputMethodService' | tail -40 || true
+  echo "--- logcat: fatal / exception ---"
+  $ADB logcat -d 2>&1 | grep -aE 'FATAL EXCEPTION|E AndroidRuntime|UnsatisfiedLink|NoSuchMethod|RegisterNatives|JNI DETECTED|PANIC' | head -30 || true
+  echo "--- dumpsys package io.opencrabs.mobile.gui ---"
+  $ADB shell dumpsys package "$PKG" 2>&1 | grep -aE 'nativeLibraryDir|primaryCpuAbi|versionName' | head -6 || true
   echo "===== END DIAGNOSTICS ====="
 }
 
@@ -92,6 +78,31 @@ fail() {
   shot "fail-selftest.png"
   diag
   exit 1
+}
+
+log_line() { # $1 = regex, echo baris terakhir yang cocok
+  $ADB logcat -d -s OcGui 2>/dev/null | grep -E "$1" | tail -1
+}
+
+wait_log() { # $1 = regex, $2 = max polls
+  local n=0
+  while [ "$n" -lt "$2" ]; do
+    if $ADB logcat -d -s OcGui 2>/dev/null | grep -qE "$1"; then return 0; fi
+    n=$((n+1)); sleep 5
+  done
+  return 1
+}
+
+tap_from_log() { # $1 = tag log (COMPOSER/SEND), set X Y global
+  local line tag="$1"
+  line=$(log_line "$tag pxcx=[0-9]")
+  say "$tag line: ${line:-<none>}"
+  TAPX=$(echo "$line" | sed -n "s/.*pxcx=\([0-9]*\).*/\1/p")
+  TAPY=$(echo "$line" | sed -n "s/.*pxcy=\([0-9]*\).*/\1/p")
+  case "$TAPX" in ''|*[!0-9]*) return 1;; esac
+  case "$TAPY" in ''|*[!0-9]*) return 1;; esac
+  [ "$TAPX" -gt 0 ] && [ "$TAPY" -gt 0 ] || return 1
+  return 0
 }
 
 say "cwd: $(pwd)"
@@ -118,18 +129,8 @@ $ADB install -r "$APK" 2>&1 | tail -3 || fail "adb install app failed"
 say "installing ADBKeyboard IME"
 $ADB install -r "$ADBKEYBOARD_APK" 2>&1 | tail -3 || fail "adb install ADBKeyboard failed"
 
-# Run 45487962664 lesson: `ime enable` fired 2s after `install Success` and
-# failed with "Unknown input method" because the system had not finished
-# scanning the package yet. At that time the emulator ran under forced TCG
-# (software emulation) because the runner user could not open /dev/kvm, so the
-# whole system was crawling and even `system` showed an ANR. With KVM enabled
-# (workflow step "Enable KVM access") the system is healthy, yet run
-# 45517874219 STILL failed with "ADBKeyboard never appeared in ime list -s"
-# after 11 minutes of polling. Root cause candidate: `ime list` WITHOUT -a
-# lists only ENABLED input methods, and a freshly installed IME is neither
-# enabled nor selected, so the poll was waiting for something that by
-# definition could not appear. Poll with -a (all: enabled AND disabled) to
-# detect REGISTRATION, then enable + select.
+# IME baru terinstall tidak muncul di `ime list -s` (hanya ENABLED): poll
+# `ime list -s -a` untuk REGISTRASI dulu, baru enable + set.
 say "waiting for ADBKeyboard to register: $IME_ID"
 IME_SEEN=0
 for _ in $(seq 1 60); do
@@ -140,69 +141,60 @@ done
 say "selecting IME: $IME_ID"
 $ADB shell ime enable "$IME_ID" 2>&1 | tail -1 || fail "ime enable failed"
 $ADB shell ime set "$IME_ID" 2>&1 | tail -1 || fail "ime set failed"
-$ADB shell dumpsys input_method 2>/dev/null | grep -o 'mCurMethodId=.*' | head -1
 $ADB shell dumpsys input_method 2>/dev/null | grep -q "mCurMethodId=${IME_ID}" || fail "ime set did not take effect"
-# The emulator ships a hardware keyboard; without this the soft IME window is
-# suppressed and mInputShown stays false for the wrong reason.
+# Emulator punya hw keyboard; tanpa ini IME window disembunyikan.
 $ADB shell settings put secure show_ime_with_hard_keyboard 1 2>&1 || true
 
 $ADB logcat -c
 say "starting $ACTIVITY"
 $ADB shell am start -W -n "$ACTIVITY" 2>&1 | tail -5 || fail "am start failed"
 
-# 1. App must be up and must report the TextEdit screen position.
-say "waiting for TEXTFIELD log (app up + field coords)"
-FOUND=0
-for _ in $(seq 1 36); do
-  if $ADB logcat -d -s OcGui 2>/dev/null | grep -q "TEXTFIELD"; then FOUND=1; break; fi
-  sleep 5
-done
-[ "$FOUND" = "1" ] || fail "app never logged TEXTFIELD (did it even start?)"
-$ADB logcat -d -s OcGui | grep -E 'APP_START|APP_READY|TEXTFIELD|FOCUS|IME_REQUEST' | tail -20
+# 1. App hidup + scaffold terpasang.
+say "waiting for UI_READY"
+wait_log 'UI_READY sessions=[0-9]' 36 || fail "app never logged UI_READY"
+$ADB logcat -d -s OcGui | grep -E 'APP_START|APP_READY|UI_READY|COMPOSER|SEND' | tail -10
 
-PXCX=$($ADB logcat -d -s OcGui | grep "TEXTFIELD" | tail -1 | sed 's/.*pxcx=\([0-9]*\).*/\1/')
-PXCY=$($ADB logcat -d -s OcGui | grep "TEXTFIELD" | tail -1 | sed 's/.*pxcy=\([0-9]*\).*/\1/')
-case "$PXCX" in ''|*[!0-9]*) fail "bad pxcx from log: '$PXCX'";; esac
-case "$PXCY" in ''|*[!0-9]*) fail "bad pxcy from log: '$PXCY'";; esac
-[ "$PXCX" -gt 0 ] && [ "$PXCY" -gt 0 ] || fail "invalid tap coords: $PXCX x $PXCY"
-say "tap target: $PXCX x $PXCY"
-
-say "tapping the TextEdit"
-$ADB shell input tap "$PXCX" "$PXCY"
-
-# 2. The IME window must actually be visible.
+# 2. Tap composer -> keyboard muncul.
+tap_from_log COMPOSER || fail "no valid COMPOSER coords in log"
+say "tapping composer at $TAPX x $TAPY"
+$ADB shell input tap "$TAPX" "$TAPY"
 ime_shown() {
   $ADB shell dumpsys input_method 2>/dev/null | grep -qE 'mInputShown=true|mInputViewShown=true' && return 0
   $ADB shell dumpsys window 2>/dev/null | grep -qE 'mImeWindowVis=0x2' && return 0
   return 1
 }
-say "waiting for IME window to show"
 KB=0
 for _ in $(seq 1 24); do
   if ime_shown; then KB=1; break; fi
   sleep 5
 done
-[ "$KB" = "1" ] || fail "IME window never showed (mInputShown stayed false)"
+[ "$KB" = "1" ] || fail "IME window never showed after composer tap"
 say "KEYBOARD SHOWN"
 shot "keyboard-shown.png"
 
-# 3. Type through the IME bridge and require egui to receive it.
-#    commitText replaces the whole editable each time, so retrying the same
-#    broadcast is safe (text stays "halo123").
+# 3. Ketik lewat jalur IME (commitText): retry aman karena state di-set penuh.
 say "sending text via IME commit: $TEXT_TO_TYPE"
 TYPED=0
 for attempt in 1 2 3 4 5 6; do
   $ADB shell am broadcast -a ADB_INPUT_TEXT --es msg "$TEXT_TO_TYPE" 2>&1 | tail -2 || true
   for _ in $(seq 1 8); do
-    if $ADB logcat -d -s OcGui 2>/dev/null | grep -qE 'TYPED chars=[1-9]'; then TYPED=1; break; fi
+    if $ADB logcat -d -s OcGui 2>/dev/null | grep -qE 'COMPOSER_TEXT chars=[1-9]'; then TYPED=1; break; fi
     sleep 5
   done
   [ "$TYPED" = "1" ] && break
-  say "attempt $attempt: no TYPED yet, retrying"
+  say "attempt $attempt: composer still empty, retrying"
 done
-[ "$TYPED" = "1" ] || fail "typed text never reached egui (IME bridge broken)"
-say "TYPED REACHED EGUI"
+[ "$TYPED" = "1" ] || fail "typed text never reached the composer (IME bridge broken)"
+say "TEXT REACHED COMPOSER"
 
-$ADB logcat -d -s OcGui | grep -E 'IME_TEXT|IME_ADOPT|TYPED|IME_REQUEST' | tail -30
+# 4. Tap Kirim -> transcript streaming dari state.
+tap_from_log SEND || fail "no valid SEND coords in log"
+say "tapping Kirim at $TAPX x $TAPY"
+$ADB shell input tap "$TAPX" "$TAPY"
+wait_log 'SENT_TO_AGENT' 12 || fail "Send tap did not reach the agent"
+wait_log 'MOCK_STREAM_DONE tokens=[1-9]' 60 || fail "mock reply never finished streaming"
+say "MOCK REPLY STREAMED (state -> transcript)"
+
+$ADB logcat -d -s OcGui | grep -E 'IME_TEXT|IME_ADOPT|COMPOSER_TEXT|SENT_TO_AGENT|MOCK_STREAM|IME_REQUEST' | tail -30
 shot "pass.png"
-say "SELFTEST PASS: keyboard shown + typed chars > 0"
+say "SELFTEST PASS: UI up + keyboard + IME text + send + streamed reply"

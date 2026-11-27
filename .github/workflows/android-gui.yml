@@ -26,6 +26,11 @@ jobs:
         with:
           targets: aarch64-linux-android
 
+      # AC task 2: crate harus compile juga di HOST (ui/mock target-independent).
+      # cargo check saja, tanpa build binary; tetap di CI, bukan laptop.
+      - name: host cargo check (lib compiles on non-android target)
+        run: cargo check --manifest-path android/Cargo.toml --lib
+
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
