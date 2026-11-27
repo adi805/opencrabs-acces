@@ -22,8 +22,14 @@ log = "0.4"
 # native_activity glue (text_input_state = NOP) to the GameActivity glue
 # (real GameTextInput bridge). Keep it on our own dependency too so feature
 # unification cannot silently drop it.
+# x11/wayland bukan buat Android: itu backend host, supaya `cargo check` di
+# target host (AC task 2) tidak kena compile_error winit
+# (winit-0.30.13/src/platform_impl/mod.rs:78). Feature winit di-gate per
+# target, jadi di Android keduanya diabaikan.
 winit = { version = "0.30", default-features = false, features = [
   "android-game-activity",
+  "x11",
+  "wayland",
 ] }
 # MUST stay in [dependencies], NOT after [workspace]: a key placed after a table
 # header is silently ignored by cargo (that bug shipped 0.6.1 in run 45593951071).
