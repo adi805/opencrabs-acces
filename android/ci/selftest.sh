@@ -176,7 +176,9 @@ shot "keyboard-shown.png"
 say "sending text via IME commit: $TEXT_TO_TYPE"
 TYPED=0
 for attempt in 1 2 3 4 5 6; do
-  $ADB shell am broadcast -a ADB_INPUT_TEXT --es msg "$TEXT_TO_TYPE" 2>&1 | tail -2 || true
+  # Eksplisit ke komponen: implicit broadcast di API 34+ di-rute salah
+  # (bukti run 46074165538: "Broadcasting: Intent { act=ADB_INPUT_TEXT pkg=penjualan }")
+  $ADB shell am broadcast -a ADB_INPUT_TEXT --es msg "$TEXT_TO_TYPE" com.android.adbkeyboard/.AdbIME 2>&1 | tail -2 || true
   for _ in $(seq 1 8); do
     if $ADB logcat -d -s OcGui 2>/dev/null | grep -qE 'COMPOSER_TEXT chars=[1-9]'; then TYPED=1; break; fi
     sleep 5
