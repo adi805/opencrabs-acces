@@ -62,6 +62,13 @@ impl Dashboard {
             self.preview_key(ev, window, cx);
             return;
         }
+        // The editor dialog owns every key while it is up (#3163): a typed
+        // character belongs to the buffer, never to the composer underneath,
+        // the same law the preview and the settings modal answer to.
+        if self.editor_focus.is_some() {
+            self.editor_key(ev, window, cx);
+            return;
+        }
         // The settings modal owns every key while it is open, on every screen
         // (#2878): an armed credential edit must not leak a typed character
         // into the composer, and the rows' arrows belong to the modal alone.
@@ -84,6 +91,15 @@ impl Dashboard {
                 return;
             }
             self.theme_modal_key(ks, cx);
+            return;
+        }
+        // A pending scope-all ask owns the keyboard on the conversation
+        // (#3168): the typed command landed the question in the chat, and
+        // the picker's second-tap law holds here too. While it waits, every
+        // key is the ask's, so a line aimed at the answer cannot leak into
+        // the composer underneath.
+        if self.screen == Screen::Chat && self.models_apply_confirm.is_some() {
+            self.shared_models_key(ev, false, cx);
             return;
         }
         // The Seeker card owns every key while it is up, and the chord that
@@ -297,6 +313,64 @@ impl Dashboard {
         // exits.
         if ev.keystroke.modifiers.control && (ev.keystroke.key == "s" || ev.keystroke.key == "l") {
             self.toggle_rail(cx);
+            return;
+        }
+        // cmd/ctrl+1..9 jumps (#3166): the nth entry of what the user is
+        // looking at, `0` being position ten. The rail holding the keyboard
+        // aims the chord at the rows the rail paints; otherwise the open
+        // conversation's topics win when it has any, the open session never
+        // changing, and the rail's rows are the fallback when it has none.
+        // It sits with the screen keys so it answers while the composer holds
+        // the caret, and claims the chord even when the position lands past
+        // the list's end: a jump chord is never text.
+        use opencrabs::ui_core::numbered_jump as jump;
+        if let Some(digit) = ev.keystroke.key.chars().next()
+            && let Some(position) = jump::chord_position(
+                ev.keystroke.modifiers.control,
+                ev.keystroke.modifiers.platform,
+                digit,
+            )
+        {
+            let list_open = self.rail_focused && self.rail_open;
+            let root = self
+                .chat_session
+                .map(|open| self.sessions.parents.get(&open).copied().unwrap_or(open));
+            let has_topics = root.is_some_and(|root| self.sessions.has_live_topics(root));
+            let scope = jump::scope_for(list_open, has_topics);
+            // The topic list the bar draws before it folds its tail: `All`
+            // first, then the family in ledger order, so a position past the
+            // pill still resolves (#3166).
+            let topic_ids: Vec<Uuid> = root
+                .map(|root| {
+                    let mut list = vec![root];
+                    list.extend(
+                        self.sessions
+                            .items
+                            .iter()
+                            .filter(|s| self.sessions.parents.get(&s.id) == Some(&root))
+                            .map(|s| s.id),
+                    );
+                    list
+                })
+                .unwrap_or_default();
+            let row_ids = self.sessions.painted_row_ids();
+            if let Some(target) = jump::resolve_target(scope, position, &topic_ids, &row_ids) {
+                match scope {
+                    jump::JumpScope::Topics => {
+                        // `All` opens the root, a topic opens the topic: the
+                        // same ids the bar's own tabs commit (#2480).
+                        self.open_session(target, cx);
+                    }
+                    jump::JumpScope::Sessions => {
+                        // The rail's own commit path: the row opens in the
+                        // pane holding the caret and the keyboard goes back
+                        // to the composer. The ring follows the jump.
+                        self.sessions.cursor = Some(target);
+                        self.open_picked_in_focused_pane(target, true, cx);
+                    }
+                }
+            }
+            cx.notify();
             return;
         }
         // ctrl+f is the rail's find field: it narrows the session list to

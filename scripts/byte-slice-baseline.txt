@@ -397,6 +397,7 @@
 1	src/gui/editor.rs	render[clip_at..input_at]
 1	src/gui/sessions.rs	title_line[..cluster_at]
 1	src/gui/sessions.rs	title_line[cluster_open..cluster_end]
+1	src/gui/tests/editor_dialog_test.rs	DASHBOARD[module..]
 1	src/gui/tests/main_test.rs	render[card..]
 3	src/gui/tests/main_test.rs	render[render
 2	src/gui/tests/main_test.rs	src[..at]
